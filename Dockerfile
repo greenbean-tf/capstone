@@ -132,6 +132,29 @@ RUN printf "numpy==1.26.0\n" > /tmp/sim-constraints.txt \
     && python -m pip install --no-deps numpy==1.26.0 \
     && rm -f /tmp/sim-constraints.txt
 
+# Patch leisaac LeRobotDatasetHandler to fix --resume mode bugs
+RUN python3 -c "
+path = '/usr/local/lib/python3.11/dist-packages/leisaac/enhance/datasets/lerobot_dataset_handler.py'
+with open(path) as f:
+    content = f.read()
+
+# Fix 1: clear() - add null check for episode_buffer before clearing
+old1 = '    def clear(self):\n        self._lerobot_dataset.clear_episode_buffer()'
+new1 = '    def clear(self):\n        if self._lerobot_dataset.episode_buffer is None:\n            return\n        self._lerobot_dataset.clear_episode_buffer()'
+assert old1 in content, 'Patch 1 pattern not found'
+content = content.replace(old1, new1)
+
+# Fix 2: get_num_episodes() - implement instead of raising NotImplementedError
+old2 = '    def get_num_episodes(self) -> int:\n        raise NotImplementedError(\"get_num_episodes is not supported for LeRobotDatasetHandler\")'
+new2 = '    def get_num_episodes(self) -> int:\n        return self._lerobot_dataset.num_episodes'
+assert old2 in content, 'Patch 2 pattern not found'
+content = content.replace(old2, new2)
+
+with open(path, 'w') as f:
+    f.write(content)
+print('leisaac patched successfully')
+"
+
 RUN python -m pip install --upgrade pip==26.0.1 \
     && python -m pip install --no-deps numpy==1.26.0
 

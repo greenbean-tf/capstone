@@ -204,6 +204,42 @@ def _apply_episode_poses(env, poses):
         )
 
 
+def _auto_tag_hf_dataset(repo_id: str) -> None:
+    """Create a HuggingFace git tag matching the dataset's codebase_version.
+
+    Newer versions of lerobot require the dataset repo to have a tag matching
+    the ``codebase_version`` field in ``meta/info.json``. This function reads
+    that field from the local cache and creates the tag on the Hub so that
+    ``lerobot-train`` can load the dataset without a manual step.
+    """
+    import json
+    import os
+
+    cache_root = os.path.join(
+        os.path.expanduser("~"), ".cache", "huggingface", "lerobot", repo_id
+    )
+    info_path = os.path.join(cache_root, "meta", "info.json")
+    if not os.path.exists(info_path):
+        print(f"[tag] info.json not found at {info_path}, skipping HF tag creation.")
+        return
+
+    with open(info_path) as f:
+        info = json.load(f)
+    version = info.get("codebase_version")
+    if not version:
+        print("[tag] codebase_version not found in info.json, skipping HF tag creation.")
+        return
+
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        api.create_tag(repo_id, tag=version, repo_type="dataset")
+        print(f"[tag] Created HuggingFace dataset tag '{version}' for {repo_id}")
+    except Exception as e:
+        # Tag may already exist — not an error
+        print(f"[tag] HF tag creation skipped: {e}")
+
+
 # z below which a task object is considered to have fallen off the table.
 # Objects sit at object_z ≈ 0.05; anything under the table surface trips this.
 _FALL_THRESHOLD_Z: float = 0.0
@@ -434,7 +470,10 @@ def main():
             env.recorder_manager.finalize()
         env.close()
         simulation_app.close()
-    
+
+    if args_cli.use_lerobot_recorder and args_cli.lerobot_dataset_repo_id:
+        _auto_tag_hf_dataset(args_cli.lerobot_dataset_repo_id)
+
     print(success_ID)
 
 
