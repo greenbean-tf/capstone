@@ -102,8 +102,33 @@ _FRANKA_REST_JOINT_POS = {
 }
 
 # Per-object phase durations: hover, approach, grasp, lift, move_above_box, lower, release/retreat
-_PHASE_DURATIONS_PER_OBJECT = (180, 130, 20, 160, 170, 15, 30)
+# Reference (cup_stacking.py): (160, 80, 20, 100, 85, 35, 30) for a single-object task.
+# Toy-blocks adjustments vs the reference:
+#   hover/lift: +20 steps each — hover/lift offsets are 0.30 m here vs 0.15–0.20 m in cup-stacking.
+#   move_above_box: +25 steps — storage box can be up to ~0.4 m lateral travel from any block.
+#   lower: matched to reference (35) — 15 was too short for a clean gripper release.
+_PHASE_DURATIONS_PER_OBJECT = (160, 80, 20, 110, 100, 35, 30)
 _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
+
+# ---------------------------------------------------------------------------
+# Convergence-based early phase advancement
+# ---------------------------------------------------------------------------
+# When the end-effector reaches within this distance (metres) of the current
+# phase target, advance immediately instead of waiting for the full duration.
+_EE_CONVERGENCE_THRESHOLD: float = 0.025  # 2.5 cm
+
+# Minimum step count that must elapse before early advancement is checked,
+# indexed by phase-in-cycle (0..6).
+_PHASE_MIN_STEPS: tuple[int, ...] = (160, 20, 20, 110, 30, 35, 15)
+#                                     ^    ^   ^   ^    ^   ^   ^
+#                              hover  apr grsp lft mab  lwr ret
+
+# Phases whose duration is always fixed (convergence check is skipped):
+#   0 — hover: linear-interpolated target only reaches final position at step 159.
+#   2 — grasp: gripper needs the full window to physically close.
+#   3 — lift:  target tracks the held object (always 0.3 m above EE) — never converges.
+#   5 — lower: object must settle in the box before the gripper opens.
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 2, 3, 5})
 
 
 def _constant_gripper(num_envs: int, device: torch.device, value: float) -> torch.Tensor:
@@ -193,6 +218,9 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._current_object_idx: int = 0
         self._event: int = 0
         self._events_dt: list[int] = list(_PHASE_DURATIONS_PER_OBJECT) * len(_OBJECT_NAMES)
+        # Cached from the last get_action() call for convergence checking in advance().
+        self._last_target_pos_w: torch.Tensor | None = None
+        self._last_ee_pos_w: torch.Tensor | None = None
 
     # ------------------------------------------------------------------
     # StateMachineBase interface
@@ -305,6 +333,10 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         else:
             target_pos_w, gripper_cmd = self._phase_retreat(drop_pos_w, num_envs, device)
 
+        # Cache current target and EE position for convergence check in advance().
+        self._last_target_pos_w = target_pos_w.clone()
+        self._last_ee_pos_w = self._ee_pos_w(robot).clone()
+
         return self._joint_position_franka_action(env, target_pos_w, target_quat_w, gripper_cmd)
 
     # ------------------------------------------------------------------
@@ -354,16 +386,12 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
     # Timeline
     # ------------------------------------------------------------------
 
-    def advance(self) -> None:
-        if self._episode_done:
-            return
-
-        self._step_count += 1
-        if self._step_count < self._events_dt[self._event]:
-            return
-
+    def _do_advance_phase(self) -> None:
+        """Move to the next phase, clearing per-phase and per-object caches."""
         self._event += 1
         self._step_count = 0
+        self._last_target_pos_w = None
+        self._last_ee_pos_w = None
 
         if self._event >= len(self._events_dt):
             self._episode_done = True
@@ -376,6 +404,33 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
             self._gripper_down_yaw_w = None
             self._gripper_down_yaw_offset_w = None
 
+    def advance(self) -> None:
+        if self._episode_done:
+            return
+
+        self._step_count += 1
+        phase_in_cycle = self._event % _PHASES_PER_OBJECT
+
+        # Early convergence check: if EE is already within threshold of the
+        # current target, skip the remaining steps for this phase.
+        # Only applies to phases whose timing is not physically critical.
+        if (
+            phase_in_cycle not in _FIXED_DURATION_PHASES
+            and self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]
+            and self._last_target_pos_w is not None
+            and self._last_ee_pos_w is not None
+        ):
+            dist = torch.linalg.norm(
+                self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+            ).max().item()
+            if dist < _EE_CONVERGENCE_THRESHOLD:
+                self._do_advance_phase()
+                return
+
+        # Fall back to fixed-duration advancement.
+        if self._step_count >= self._events_dt[self._event]:
+            self._do_advance_phase()
+
     def reset(self) -> None:
         self._step_count = 0
         self._episode_done = False
@@ -384,6 +439,8 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._initial_ee_pos_w = None
         self._gripper_down_yaw_w = None
         self._gripper_down_yaw_offset_w = None
+        self._last_target_pos_w = None
+        self._last_ee_pos_w = None
 
     # ------------------------------------------------------------------
     # IK / control helpers (same as CupStackingStateMachine)
