@@ -74,7 +74,7 @@ _GRASP_Z_AT_CLOSE_PER_OBJECT: dict[str, float] = {
 # specific USD's centre-of-mesh is offset from the tag-detected pose.
 _GRASP_XY_OFFSET_PER_OBJECT: dict[str, tuple[float, float]] = {
     "green_block": (0.0, 0.0),
-    "blue_block": (-0.015, 0.0),
+    "blue_block": (-0.035, 0.0),
     "red_block": (0.0, 0.0),
 }
 # Per-object world-frame xy offset added to the storage box position when
