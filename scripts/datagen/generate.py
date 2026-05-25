@@ -390,6 +390,9 @@ def main():
     _apply_episode_poses(env, episodes[next_episode_idx])
     next_episode_idx += 1
 
+    # Tracks total episodes attempted (including previous sessions via --resume).
+    episode_attempted = next_episode_idx - 1
+
     start_record_state = False
     interrupted = False
 
@@ -425,12 +428,20 @@ def main():
                         current_recorded_demo_count,
                         start_record_state,
                     )
+                    episode_attempted += 1
+                    remaining = len(episodes) - episode_attempted
                     if success:
-                        print(f"\033[92m[Data Usage]{cnt}/{len(episodes)} success.\033[0m")
-                        success_ID.append(cnt)
+                        print(
+                            f"\033[92m[Episode {episode_attempted}/{len(episodes)}] "
+                            f"success ✓  ({remaining} remaining)\033[0m"
+                        )
+                        success_ID.append(episode_attempted)
                         cnt += 1
                     else:
-                        print(f"\033[91m[Data Usage]{cnt}/{len(episodes)} fail.\033[0m")
+                        print(
+                            f"\033[91m[Episode {episode_attempted}/{len(episodes)}] "
+                            f"fail ✗  ({remaining} remaining)\033[0m"
+                        )
                     if should_break:
                         break
                 else:
