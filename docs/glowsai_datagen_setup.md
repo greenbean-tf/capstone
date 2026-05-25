@@ -171,9 +171,11 @@ python scripts/datagen/generate.py \
     --record \
     --use_lerobot_recorder \
     --lerobot_dataset_repo_id ${HF_USER}/<dataset_repo_name> \
-    --object_poses data/<demo_directory_name>/object_poses.json \
+    --object_poses data/synthetic/object_poses.json \
     --step_hz 10000
 ```
+
+> `--object_poses` points to the scene config file generated in Part 1 Step 6. `<dataset_repo_name>` is the HuggingFace dataset repo name you choose (e.g. `toy_blocks_collection`). These two names are independent — do not confuse them.
 
 > `--step_hz 10000` removes the default 60 Hz real-time throttle and lets the GPU run as fast as possible. This gives roughly **2–3× speedup** with no impact on data quality.
 
@@ -199,6 +201,8 @@ Wait for `Replayed all N episodes. Exiting the app.` before stopping.
 
 If you closed the container or are on a fresh GlowsAI instance, the local lerobot cache is empty.
 You must **download the existing dataset first** before using `--resume`, otherwise the script cannot determine how many episodes were already recorded.
+
+> ⚠️ **Path distinction:** `data/synthetic/` is where your scene config (`object_poses.json`) lives. The lerobot cache at `/root/.cache/huggingface/lerobot/${HF_USER}/<dataset_repo_name>` is where training data is stored. The `--local-dir` below **must end with `<dataset_repo_name>`**, not `synthetic` or any other name — it must match exactly what you pass to `--lerobot_dataset_repo_id`.
 
 ```bash
 # Step 1: download existing dataset into the lerobot cache location
@@ -290,14 +294,39 @@ The `front` camera is defined at `/World/front_camera` (a single global tile). W
 
 **Fix:** Always use `--num_envs 1` for these tasks.
 
-### `--resume` bugs (already patched in Dockerfile)
+### `--resume` bugs — manual patch required
 
 Two bugs in `leisaac.enhance.datasets.lerobot_dataset_handler` affect `--resume` mode:
 
 1. `clear()` crashes with `TypeError: 'NoneType' object is not subscriptable` when `episode_buffer` is `None` on the first reset.
 2. `get_num_episodes()` raises `NotImplementedError`.
 
-Both are fixed in `Dockerfile` via a post-install patch. No manual action needed as long as you use the Docker image built from this repo.
+These are fixed in `Dockerfile`, but if your container image was built before the patch was added (Docker layer cache), the fix is not applied. **Run this inside the container every time you start a new session:**
+
+```bash
+python3 -c "
+path = '/usr/local/lib/python3.11/dist-packages/leisaac/enhance/datasets/lerobot_dataset_handler.py'
+content = open(path).read()
+content = content.replace(
+    '    def clear(self):\n        self._lerobot_dataset.clear_episode_buffer()',
+    '    def clear(self):\n        if self._lerobot_dataset.episode_buffer is None:\n            return\n        self._lerobot_dataset.clear_episode_buffer()'
+)
+content = content.replace(
+    '    def get_num_episodes(self) -> int:\n        raise NotImplementedError(\"get_num_episodes is not supported for LeRobotDatasetHandler\")',
+    '    def get_num_episodes(self) -> int:\n        return self._lerobot_dataset.num_episodes'
+)
+open(path, 'w').write(content)
+print('Both patches applied OK')
+"
+```
+
+To permanently fix, rebuild the image from the host (outside the container):
+
+```bash
+docker build --no-cache -f Dockerfile -t leisaac-isaaclab:latest .
+```
+
+This takes 20–60 minutes but only needs to be done once.
 
 ---
 

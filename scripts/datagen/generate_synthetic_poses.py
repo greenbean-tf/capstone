@@ -54,13 +54,14 @@ OBJECT_NAMES: tuple[str, ...] = ("green_block", "blue_block", "red_block")
 
 # ---------------------------------------------------------------------------
 # Workspace bounds (world frame)
-# Based on observed successes: X ≈ 0.1–0.55, Y ≈ −0.65 to −0.30
+# Table surface (counter_right_main_group) bounding box: X=[0.003, 0.703], Y=[-0.677, -0.027]
+# Y_MIN set to -0.65 to keep a 2.7 cm margin from the table edge at Y=-0.677.
 # Day-1 failure confirmed: Y ≈ 0 is outside effective reach (FSM fails).
 # ---------------------------------------------------------------------------
 
 WORKSPACE_X_MIN: float = 0.05
 WORKSPACE_X_MAX: float = 0.60
-WORKSPACE_Y_MIN: float = -0.70
+WORKSPACE_Y_MIN: float = -0.65  # table Y min is -0.677; -0.65 keeps a 2.7 cm margin
 WORKSPACE_Y_MAX: float = -0.28
 
 # Franka reach window measured from robot base (x, y)
