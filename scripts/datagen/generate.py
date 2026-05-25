@@ -403,7 +403,7 @@ def main():
         print("\n[INFO] KeyboardInterrupt (Ctrl+C) detected. Cleaning up resources...")
 
     original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
-    cnt = 1
+    cnt = 0
     success_ID = []
     try:
         while simulation_app.is_running() and not simulation_app.is_exiting() and not interrupted:
@@ -431,16 +431,16 @@ def main():
                     episode_attempted += 1
                     remaining = len(episodes) - episode_attempted
                     if success:
+                        cnt += 1
                         print(
                             f"\033[92m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"success ✓  ({remaining} remaining)\033[0m"
+                            f"success ✓  |  {cnt} 筆成功  |  剩 {remaining} 個\033[0m"
                         )
                         success_ID.append(episode_attempted)
-                        cnt += 1
                     else:
                         print(
                             f"\033[91m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"fail ✗  ({remaining} remaining)\033[0m"
+                            f"fail ✗  |  {cnt} 筆成功  |  剩 {remaining} 個\033[0m"
                         )
                     if should_break:
                         break
