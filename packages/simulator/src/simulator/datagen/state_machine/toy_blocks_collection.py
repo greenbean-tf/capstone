@@ -133,9 +133,10 @@ _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
 # centre (obj_pos_w).  Using the actual block position rather than the
 # computed approach target avoids accumulated error from retreat/xy offsets.
 # At a correct approach position (block + 8 cm Z, ~0–2.5 cm XY retreat) the
-# 3-D distance to the block centre is ~8.4 cm.
-# 9 cm threshold → allowed XY error ≈ sqrt(0.09²−0.08²) ≈ 4 cm.
-_EE_TO_BLOCK_THRESHOLD: float = 0.09  # 9 cm
+# 3-D distance to the block centre is ~8.4 cm, so 10 cm gives a safe margin.
+# Do NOT tighten below ~0.10: the DLS IK oscillates near the exact target,
+# and a stricter threshold forces the arm to stay in that noisy zone longer.
+_EE_TO_BLOCK_THRESHOLD: float = 0.10  # 10 cm
 
 # Phase 2 (grasp): advance when total finger width exceeds this (fingers did not
 # close fully → something is between them).

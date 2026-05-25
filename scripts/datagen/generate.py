@@ -434,13 +434,13 @@ def main():
                         cnt += 1
                         print(
                             f"\033[92m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"success ✓  |  {cnt} 筆成功  |  剩 {remaining} 個\033[0m"
+                            f"success ✓  |  {cnt} successful  |  {remaining} remaining\033[0m"
                         )
                         success_ID.append(episode_attempted)
                     else:
                         print(
                             f"\033[91m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"fail ✗  |  {cnt} 筆成功  |  剩 {remaining} 個\033[0m"
+                            f"fail ✗  |  {cnt} successful  |  {remaining} remaining\033[0m"
                         )
                     if should_break:
                         break
