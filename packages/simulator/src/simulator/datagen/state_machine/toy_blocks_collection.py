@@ -67,14 +67,14 @@ _GRASP_RETREAT_PER_OBJECT: dict[str, float] = {
 # the EE still while fingers close (helps wide cylinders like the Cylinder USD).
 _GRASP_Z_AT_CLOSE_PER_OBJECT: dict[str, float] = {
     "green_block": 0.0,
-    "blue_block": _GRASP_Z_OFFSET,
+    "blue_block": 0.0,
     "red_block": 0.0,
 }
 # Per-object world-frame xy nudge added to the grasp anchor. Use this when a
 # specific USD's centre-of-mesh is offset from the tag-detected pose.
 _GRASP_XY_OFFSET_PER_OBJECT: dict[str, tuple[float, float]] = {
     "green_block": (0.0, 0.0),
-    "blue_block": (-0.035, 0.0),
+    "blue_block": (-0.015, 0.0),
     "red_block": (0.0, 0.0),
 }
 # Per-object world-frame xy offset added to the storage box position when
