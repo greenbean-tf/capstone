@@ -148,6 +148,17 @@ _MIN_GRASP_WIDTH: float = 0.008  # metres, sum of both finger joint positions
 # singularities (EE briefly within threshold, then drifts away again).
 _CONVERGENCE_HOLD_STEPS: int = 5
 
+# Per-object override for phase 1 (approach) hold steps.
+# The blue cylinder lying on its side has a smaller contact area than upright
+# blocks, so the gripper XY position must be more stable before closing.
+# More hold steps means the IK must settle for longer before transitioning,
+# reducing premature exits while the arm is still oscillating.
+_APPROACH_HOLD_STEPS_PER_OBJECT: dict[str, int] = {
+    "green_block": _CONVERGENCE_HOLD_STEPS,
+    "blue_block": 20,
+    "red_block": _CONVERGENCE_HOLD_STEPS,
+}
+
 # Phase 3 (lift): advance when object z exceeds this height (successfully lifted).
 _LIFT_SUCCESS_Z: float = 0.25   # metres above world origin
 
@@ -463,15 +474,20 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
                 # Approach → Grasp: measure EE distance to the actual block
                 # centre, not the computed approach target.  This is more
                 # reliable because retreat/xy offsets in the target can
-                # accumulate error.  Require _CONVERGENCE_HOLD_STEPS
-                # consecutive steps to avoid IK oscillation false positives.
+                # accumulate error.  Use per-object hold steps so that objects
+                # requiring more precise positioning (e.g. the blue cylinder)
+                # wait longer for the IK to settle before transitioning.
+                obj_name = _OBJECT_NAMES[self._current_object_idx]
+                hold_required = _APPROACH_HOLD_STEPS_PER_OBJECT.get(
+                    obj_name, _CONVERGENCE_HOLD_STEPS
+                )
                 if self._last_ee_pos_w is not None and self._last_obj_pos_w is not None:
                     dist = torch.linalg.norm(
                         self._last_ee_pos_w - self._last_obj_pos_w, dim=-1
                     ).max().item()
                     if dist < _EE_TO_BLOCK_THRESHOLD:
                         self._phase_convergence_count += 1
-                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                        if self._phase_convergence_count >= hold_required:
                             self._do_advance_phase()
                             return
                     else:
