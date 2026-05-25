@@ -129,8 +129,12 @@ _PHASE_MIN_STEPS: tuple[int, ...] = (200, 40, 10, 30, 60, 35, 15)
 # EE is truly above the box before lowering, regardless of travel distance.
 _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
 
-# Phase 1 (approach): advance when EE is within this distance of approach target.
-_APPROACH_CONVERGENCE_THRESHOLD: float = 0.008  # 8 mm
+# Phase 1 (approach): advance when EE is within this distance of the block
+# centre (obj_pos_w).  Using the actual block position rather than the
+# computed approach target avoids accumulated error from retreat/xy offsets.
+# At a correct approach position (block + 2 cm Z, ~0–2.5 cm XY retreat) the
+# 3-D distance to the block centre is ~2–4 cm, so 5 cm gives a safe margin.
+_EE_TO_BLOCK_THRESHOLD: float = 0.05  # 5 cm
 
 # Phase 2 (grasp): advance when total finger width exceeds this (fingers did not
 # close fully → something is between them).
@@ -454,15 +458,16 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
             and self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]
         ):
             if phase_in_cycle == 1:
-                # Approach → Grasp: EE must stay within threshold for
-                # _CONVERGENCE_HOLD_STEPS consecutive steps.  A single step
-                # within range is not enough — IK oscillation near singularities
-                # can briefly satisfy the condition before drifting away.
-                if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
+                # Approach → Grasp: measure EE distance to the actual block
+                # centre, not the computed approach target.  This is more
+                # reliable because retreat/xy offsets in the target can
+                # accumulate error.  Require _CONVERGENCE_HOLD_STEPS
+                # consecutive steps to avoid IK oscillation false positives.
+                if self._last_ee_pos_w is not None and self._last_obj_pos_w is not None:
                     dist = torch.linalg.norm(
-                        self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+                        self._last_ee_pos_w - self._last_obj_pos_w, dim=-1
                     ).max().item()
-                    if dist < _APPROACH_CONVERGENCE_THRESHOLD:
+                    if dist < _EE_TO_BLOCK_THRESHOLD:
                         self._phase_convergence_count += 1
                         if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
                             self._do_advance_phase()
