@@ -38,10 +38,10 @@ _GRIPPER_CLOSE = -1.0
 
 _MAX_CARTESIAN_DELTA = 0.018
 _MAX_ROT_DELTA = 0.08
-_IK_DLS_LAMBDA = 0.01
+_IK_DLS_LAMBDA = 0.003
 
 _HOVER_Z_OFFSET = 0.3
-_GRASP_Z_OFFSET = 0.06
+_GRASP_Z_OFFSET = 0.08
 _LIFT_Z_OFFSET = 0.3
 _RELEASE_Z_OFFSET = 0.09
 _GRIPPER_DOWN_ROLL_W = math.pi
@@ -132,9 +132,9 @@ _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
 # Phase 1 (approach): advance when EE is within this distance of the block
 # centre (obj_pos_w).  Using the actual block position rather than the
 # computed approach target avoids accumulated error from retreat/xy offsets.
-# At a correct approach position (block + 6 cm Z, ~0–2.5 cm XY retreat) the
-# 3-D distance to the block centre is ~6.5 cm, so 8 cm gives a safe margin.
-_EE_TO_BLOCK_THRESHOLD: float = 0.08  # 8 cm
+# At a correct approach position (block + 8 cm Z, ~0–2.5 cm XY retreat) the
+# 3-D distance to the block centre is ~8.4 cm, so 10 cm gives a safe margin.
+_EE_TO_BLOCK_THRESHOLD: float = 0.10  # 10 cm
 
 # Phase 2 (grasp): advance when total finger width exceeds this (fingers did not
 # close fully → something is between them).
