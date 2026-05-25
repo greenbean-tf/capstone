@@ -136,6 +136,11 @@ _APPROACH_CONVERGENCE_THRESHOLD: float = 0.008  # 8 mm
 # Fingers range 0.0 (closed) to 0.04 m each; sum > 0.008 m means object grasped.
 _MIN_GRASP_WIDTH: float = 0.008  # metres, sum of both finger joint positions
 
+# Phases 1 and 2: number of *consecutive* steps the condition must hold before
+# advancing. Prevents false-positive exits caused by IK oscillation near
+# singularities (EE briefly within threshold, then drifts away again).
+_CONVERGENCE_HOLD_STEPS: int = 5
+
 # Phase 3 (lift): advance when object z exceeds this height (successfully lifted).
 _LIFT_SUCCESS_Z: float = 0.25   # metres above world origin
 
@@ -239,6 +244,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._event: int = 0
         self._events_dt: list[int] = list(_PHASE_DURATIONS_PER_OBJECT) * len(_OBJECT_NAMES)
         self._finger_joint_ids: list[int] = []
+        self._phase_convergence_count: int = 0
         # Cached from the last get_action() call for convergence checking in advance().
         self._last_target_pos_w: torch.Tensor | None = None
         self._last_ee_pos_w: torch.Tensor | None = None
@@ -417,6 +423,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         """Move to the next phase, clearing per-phase and per-object caches."""
         self._event += 1
         self._step_count = 0
+        self._phase_convergence_count = 0
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
@@ -446,22 +453,34 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
             and self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]
         ):
             if phase_in_cycle == 1:
-                # Approach → Grasp: EE close enough to approach target.
+                # Approach → Grasp: EE must stay within threshold for
+                # _CONVERGENCE_HOLD_STEPS consecutive steps.  A single step
+                # within range is not enough — IK oscillation near singularities
+                # can briefly satisfy the condition before drifting away.
                 if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
                     dist = torch.linalg.norm(
                         self._last_ee_pos_w - self._last_target_pos_w, dim=-1
                     ).max().item()
                     if dist < _APPROACH_CONVERGENCE_THRESHOLD:
-                        self._do_advance_phase()
-                        return
+                        self._phase_convergence_count += 1
+                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                            self._do_advance_phase()
+                            return
+                    else:
+                        self._phase_convergence_count = 0
 
             elif phase_in_cycle == 2:
-                # Grasp → Lift: fingers did not close fully → object is held.
+                # Grasp → Lift: fingers must stay open (object held) for
+                # _CONVERGENCE_HOLD_STEPS consecutive steps.
                 if self._last_finger_pos is not None:
                     total_width = self._last_finger_pos.sum(dim=-1).max().item()
                     if total_width > _MIN_GRASP_WIDTH:
-                        self._do_advance_phase()
-                        return
+                        self._phase_convergence_count += 1
+                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                            self._do_advance_phase()
+                            return
+                    else:
+                        self._phase_convergence_count = 0
 
             elif phase_in_cycle == 3:
                 # Lift → Move-above-box: object has risen to target height.
@@ -504,6 +523,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._initial_ee_pos_w = None
         self._gripper_down_yaw_w = None
         self._gripper_down_yaw_offset_w = None
+        self._phase_convergence_count = 0
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
