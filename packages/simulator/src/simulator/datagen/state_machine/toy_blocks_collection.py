@@ -125,10 +125,22 @@ _PHASE_MIN_STEPS: tuple[int, ...] = (160, 20, 20, 110, 30, 35, 15)
 
 # Phases whose duration is always fixed (convergence check is skipped):
 #   0 — hover: linear-interpolated target only reaches final position at step 159.
+#   1 — approach: must run full duration so EE is physically close to block before grasp.
+#                 2.5 cm convergence threshold exits too early (EE up to 4.5 cm from block).
 #   2 — grasp: gripper needs the full window to physically close.
 #   3 — lift:  target tracks the held object (always 0.3 m above EE) — never converges.
 #   5 — lower: object must settle in the box before the gripper opens.
-_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 2, 3, 5})
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 5})
+
+# ---------------------------------------------------------------------------
+# Grasp failure detection
+# ---------------------------------------------------------------------------
+# If the current object's z has not exceeded this height by step _GRASP_CHECK_STEP
+# of the lift phase, the grasp failed and the episode is aborted immediately.
+# Object rests at OBJECT_Z ≈ 0.05 m; a successful lift should carry it well
+# above 0.15 m within 50 steps.
+_MIN_LIFT_Z: float = 0.15       # metres above world origin
+_GRASP_CHECK_STEP: int = 50     # step within lift phase at which to check
 
 
 def _constant_gripper(num_envs: int, device: torch.device, value: float) -> torch.Tensor:
@@ -221,6 +233,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         # Cached from the last get_action() call for convergence checking in advance().
         self._last_target_pos_w: torch.Tensor | None = None
         self._last_ee_pos_w: torch.Tensor | None = None
+        self._last_obj_pos_w: torch.Tensor | None = None
 
     # ------------------------------------------------------------------
     # StateMachineBase interface
@@ -333,9 +346,10 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         else:
             target_pos_w, gripper_cmd = self._phase_retreat(drop_pos_w, num_envs, device)
 
-        # Cache current target and EE position for convergence check in advance().
+        # Cache current target, EE, and object positions for advance() checks.
         self._last_target_pos_w = target_pos_w.clone()
         self._last_ee_pos_w = self._ee_pos_w(robot).clone()
+        self._last_obj_pos_w = obj_pos_w.clone()
 
         return self._joint_position_franka_action(env, target_pos_w, target_quat_w, gripper_cmd)
 
@@ -392,6 +406,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._step_count = 0
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
+        self._last_obj_pos_w = None
 
         if self._event >= len(self._events_dt):
             self._episode_done = True
@@ -427,6 +442,17 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
                 self._do_advance_phase()
                 return
 
+        # Grasp failure detection: during lift phase, abort if object hasn't risen.
+        if (
+            phase_in_cycle == 3
+            and self._step_count == _GRASP_CHECK_STEP
+            and self._last_obj_pos_w is not None
+        ):
+            obj_z = self._last_obj_pos_w[0, 2].item()
+            if obj_z < _MIN_LIFT_Z:
+                self._episode_done = True
+                return
+
         # Fall back to fixed-duration advancement.
         if self._step_count >= self._events_dt[self._event]:
             self._do_advance_phase()
@@ -441,6 +467,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._gripper_down_yaw_offset_w = None
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
+        self._last_obj_pos_w = None
 
     # ------------------------------------------------------------------
     # IK / control helpers (same as CupStackingStateMachine)
