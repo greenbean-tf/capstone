@@ -31,6 +31,7 @@ _FRANKA_ARM_JOINT_NAMES = (
     "panda_joint6",
     "panda_joint7",
 )
+_FINGER_JOINT_NAMES = ("panda_finger_joint1", "panda_finger_joint2")
 
 _GRIPPER_OPEN = 1.0
 _GRIPPER_CLOSE = -1.0
@@ -109,41 +110,44 @@ _FRANKA_REST_JOINT_POS = {
 #   hover/lift: +20 steps each — hover/lift offsets are 0.30 m here vs 0.15–0.20 m in cup-stacking.
 #   move_above_box: +25 steps — storage box can be up to ~0.4 m lateral travel from any block.
 #   lower: matched to reference (35) — 15 was too short for a clean gripper release.
-_PHASE_DURATIONS_PER_OBJECT = (160, 200, 40, 110, 100, 35, 30)
+_PHASE_DURATIONS_PER_OBJECT = (200, 200, 40, 110, 100, 35, 30)
 _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
 
 # ---------------------------------------------------------------------------
-# Convergence-based early phase advancement
+# Phase transition logic
 # ---------------------------------------------------------------------------
-# When the end-effector reaches within this distance (metres) of the current
-# phase target, advance immediately instead of waiting for the full duration.
+
+# Minimum step count before early exit is checked, indexed by phase-in-cycle.
+_PHASE_MIN_STEPS: tuple[int, ...] = (200, 40, 10, 30, 100, 35, 15)
+#                                     ^    ^   ^   ^   ^    ^   ^
+#                              hover  apr grsp lft mab  lwr ret
+
+# Phases that always run to full duration (no early exit):
+#   0 — hover: linear-interpolated target reaches final position only at the last step.
+#   4 — move_above_box: early exit caused gripper to open before block reached box.
+#   5 — lower: block must settle in box before gripper opens.
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 4, 5})
+
+# Phase 1 (approach): advance when EE is within this distance of approach target.
+_APPROACH_CONVERGENCE_THRESHOLD: float = 0.008  # 8 mm
+
+# Phase 2 (grasp): advance when total finger width exceeds this (fingers did not
+# close fully → something is between them).
+# Fingers range 0.0 (closed) to 0.04 m each; sum > 0.008 m means object grasped.
+_MIN_GRASP_WIDTH: float = 0.008  # metres, sum of both finger joint positions
+
+# Phase 3 (lift): advance when object z exceeds this height (successfully lifted).
+_LIFT_SUCCESS_Z: float = 0.25   # metres above world origin
+
+# Phase 6 (retreat): advance when EE is within this distance of retreat target.
 _EE_CONVERGENCE_THRESHOLD: float = 0.025  # 2.5 cm
 
-# Minimum step count that must elapse before early advancement is checked,
-# indexed by phase-in-cycle (0..6).
-_PHASE_MIN_STEPS: tuple[int, ...] = (160, 200, 40, 110, 100, 35, 15)
-#                                     ^    ^    ^   ^    ^    ^   ^
-#                              hover  apr  grsp lft mab  lwr  ret
-
-# Phases whose duration is always fixed (convergence check is skipped):
-#   0 — hover: linear-interpolated target only reaches final position at step 159.
-#   1 — approach: must run full duration so EE is physically close to block before grasp.
-#                 2.5 cm convergence threshold exits too early (EE up to 4.5 cm from block).
-#   2 — grasp: gripper needs the full window to physically close.
-#   3 — lift:  target tracks the held object (always 0.3 m above EE) — never converges.
-#   4 — move_above_box: early convergence exit causes gripper to open before block reaches box.
-#                       Must run full duration so block is physically above box before lower.
-#   5 — lower: object must settle in the box before the gripper opens.
-_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
-
 # ---------------------------------------------------------------------------
-# Grasp failure detection
+# Grasp failure detection (lift phase)
 # ---------------------------------------------------------------------------
-# If the current object's z has not exceeded this height by step _GRASP_CHECK_STEP
-# of the lift phase, the grasp failed and the episode is aborted immediately.
-# Object rests at OBJECT_Z ≈ 0.05 m; a successful lift should carry it well
-# above 0.15 m within 50 steps.
-_MIN_LIFT_Z: float = 0.10       # metres above world origin (block starts at 0.05)
+# If object z has not exceeded _MIN_LIFT_Z by step _GRASP_CHECK_STEP,
+# the episode is aborted immediately.
+_MIN_LIFT_Z: float = 0.10       # metres (block starts at OBJECT_Z ≈ 0.05)
 _GRASP_CHECK_STEP: int = 80     # step within lift phase at which to check
 
 
@@ -234,10 +238,12 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._current_object_idx: int = 0
         self._event: int = 0
         self._events_dt: list[int] = list(_PHASE_DURATIONS_PER_OBJECT) * len(_OBJECT_NAMES)
+        self._finger_joint_ids: list[int] = []
         # Cached from the last get_action() call for convergence checking in advance().
         self._last_target_pos_w: torch.Tensor | None = None
         self._last_ee_pos_w: torch.Tensor | None = None
         self._last_obj_pos_w: torch.Tensor | None = None
+        self._last_finger_pos: torch.Tensor | None = None
 
     # ------------------------------------------------------------------
     # StateMachineBase interface
@@ -251,6 +257,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         if missing:
             raise ValueError(f"Missing Franka joints {missing} in {joint_names}")
         self._arm_joint_ids = [joint_names.index(j) for j in _FRANKA_ARM_JOINT_NAMES]
+        self._finger_joint_ids = [joint_names.index(j) for j in _FINGER_JOINT_NAMES if j in joint_names]
 
         if self._ee_body_idx < 0:
             raise ValueError(f"Could not find body '{_EE_BODY_NAME}' in Franka.")
@@ -350,10 +357,12 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         else:
             target_pos_w, gripper_cmd = self._phase_retreat(drop_pos_w, num_envs, device)
 
-        # Cache current target, EE, and object positions for advance() checks.
+        # Cache current target, EE, object, and finger positions for advance() checks.
         self._last_target_pos_w = target_pos_w.clone()
         self._last_ee_pos_w = self._ee_pos_w(robot).clone()
         self._last_obj_pos_w = obj_pos_w.clone()
+        if self._finger_joint_ids:
+            self._last_finger_pos = robot.data.joint_pos[:, self._finger_joint_ids].clone()
 
         return self._joint_position_franka_action(env, target_pos_w, target_quat_w, gripper_cmd)
 
@@ -411,6 +420,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
+        self._last_finger_pos = None
 
         if self._event >= len(self._events_dt):
             self._episode_done = True
@@ -430,21 +440,46 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._step_count += 1
         phase_in_cycle = self._event % _PHASES_PER_OBJECT
 
-        # Early convergence check: if EE is already within threshold of the
-        # current target, skip the remaining steps for this phase.
-        # Only applies to phases whose timing is not physically critical.
+        # Per-phase early-exit (only after minimum steps, only for non-fixed phases).
         if (
             phase_in_cycle not in _FIXED_DURATION_PHASES
             and self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]
-            and self._last_target_pos_w is not None
-            and self._last_ee_pos_w is not None
         ):
-            dist = torch.linalg.norm(
-                self._last_ee_pos_w - self._last_target_pos_w, dim=-1
-            ).max().item()
-            if dist < _EE_CONVERGENCE_THRESHOLD:
-                self._do_advance_phase()
-                return
+            if phase_in_cycle == 1:
+                # Approach → Grasp: EE close enough to approach target.
+                if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
+                    dist = torch.linalg.norm(
+                        self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+                    ).max().item()
+                    if dist < _APPROACH_CONVERGENCE_THRESHOLD:
+                        self._do_advance_phase()
+                        return
+
+            elif phase_in_cycle == 2:
+                # Grasp → Lift: fingers did not close fully → object is held.
+                if self._last_finger_pos is not None:
+                    total_width = self._last_finger_pos.sum(dim=-1).max().item()
+                    if total_width > _MIN_GRASP_WIDTH:
+                        self._do_advance_phase()
+                        return
+
+            elif phase_in_cycle == 3:
+                # Lift → Move-above-box: object has risen to target height.
+                if self._last_obj_pos_w is not None:
+                    obj_z = self._last_obj_pos_w[0, 2].item()
+                    if obj_z > _LIFT_SUCCESS_Z:
+                        self._do_advance_phase()
+                        return
+
+            elif phase_in_cycle == 6:
+                # Retreat → next object: EE converged to retreat target.
+                if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
+                    dist = torch.linalg.norm(
+                        self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+                    ).max().item()
+                    if dist < _EE_CONVERGENCE_THRESHOLD:
+                        self._do_advance_phase()
+                        return
 
         # Grasp failure detection: during lift phase, abort if object hasn't risen.
         if (
@@ -472,6 +507,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._last_target_pos_w = None
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
+        self._last_finger_pos = None
 
     # ------------------------------------------------------------------
     # IK / control helpers (same as CupStackingStateMachine)
