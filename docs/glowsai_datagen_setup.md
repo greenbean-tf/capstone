@@ -20,7 +20,7 @@ Only needed the first time on a new GlowsAI instance.
 
 ```bash
 git clone https://github.com/greenbean-tf/capstone.git
-cd ~/Desktop/capstone
+cd capstone
 ```
 
 ### 2. Initialize submodules
@@ -34,8 +34,11 @@ make submodules
 The system `pip` on Ubuntu 24.04 conflicts with debian-managed packages. Use `--break-system-packages --ignore-installed`:
 
 ```bash
+apt-get update
 pip3 install --break-system-packages --ignore-installed "huggingface_hub[cli]"
 ```
+
+> If `pip3` is not found, install it first: `apt install -y python3-pip`. Run `apt-get update` before this as well to avoid 404 errors from a stale package list.
 
 Verify:
 
@@ -79,7 +82,7 @@ Use this instead of Step 5 when you want more data or don't have UMI recordings.
 The script places blocks randomly within the robot's reachable workspace.
 
 ```bash
-cd ~/Desktop/capstone
+cd capstone
 
 python scripts/datagen/generate_synthetic_poses.py \
     --num_episodes 200 \
@@ -111,7 +114,7 @@ apt-get install -y tmux
 ### 2. Start tmux session
 
 ```bash
-cd ~/Desktop/capstone
+cd capstone
 tmux new -s capstone
 ```
 
