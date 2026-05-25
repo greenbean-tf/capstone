@@ -110,7 +110,7 @@ _FRANKA_REST_JOINT_POS = {
 #   hover/lift: +20 steps each — hover/lift offsets are 0.30 m here vs 0.15–0.20 m in cup-stacking.
 #   move_above_box: +25 steps — storage box can be up to ~0.4 m lateral travel from any block.
 #   lower: matched to reference (35) — 15 was too short for a clean gripper release.
-_PHASE_DURATIONS_PER_OBJECT = (200, 200, 40, 110, 100, 35, 30)
+_PHASE_DURATIONS_PER_OBJECT = (200, 200, 40, 110, 200, 35, 30)
 _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
 
 # ---------------------------------------------------------------------------
@@ -118,15 +118,16 @@ _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
 # ---------------------------------------------------------------------------
 
 # Minimum step count before early exit is checked, indexed by phase-in-cycle.
-_PHASE_MIN_STEPS: tuple[int, ...] = (200, 40, 10, 30, 100, 35, 15)
-#                                     ^    ^   ^   ^   ^    ^   ^
-#                              hover  apr grsp lft mab  lwr ret
+_PHASE_MIN_STEPS: tuple[int, ...] = (200, 40, 10, 30, 60, 35, 15)
+#                                     ^    ^   ^   ^   ^   ^   ^
+#                              hover  apr grsp lft mab lwr ret
 
 # Phases that always run to full duration (no early exit):
 #   0 — hover: linear-interpolated target reaches final position only at the last step.
-#   4 — move_above_box: early exit caused gripper to open before block reached box.
 #   5 — lower: block must settle in box before gripper opens.
-_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 4, 5})
+# Phase 4 (move_above_box) uses convergence check so the robot waits until the
+# EE is truly above the box before lowering, regardless of travel distance.
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
 
 # Phase 1 (approach): advance when EE is within this distance of approach target.
 _APPROACH_CONVERGENCE_THRESHOLD: float = 0.008  # 8 mm
@@ -489,6 +490,22 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
                     if obj_z > _LIFT_SUCCESS_Z:
                         self._do_advance_phase()
                         return
+
+            elif phase_in_cycle == 4:
+                # Move-above-box → Lower: EE must be stably above the drop
+                # position before the robot starts descending.  Uses the same
+                # consecutive-step check as approach to prevent false positives.
+                if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
+                    dist = torch.linalg.norm(
+                        self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+                    ).max().item()
+                    if dist < _EE_CONVERGENCE_THRESHOLD:
+                        self._phase_convergence_count += 1
+                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                            self._do_advance_phase()
+                            return
+                    else:
+                        self._phase_convergence_count = 0
 
             elif phase_in_cycle == 6:
                 # Retreat → next object: EE converged to retreat target.
