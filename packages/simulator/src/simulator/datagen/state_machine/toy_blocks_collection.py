@@ -37,7 +37,7 @@ _GRIPPER_CLOSE = -1.0
 
 _MAX_CARTESIAN_DELTA = 0.018
 _MAX_ROT_DELTA = 0.08
-_IK_DLS_LAMBDA = 0.01
+_IK_DLS_LAMBDA = 0.003  # reduced from 0.01 for faster IK convergence
 
 _HOVER_Z_OFFSET = 0.3
 _GRASP_Z_OFFSET = 0.02
@@ -131,8 +131,10 @@ _PHASE_MIN_STEPS: tuple[int, ...] = (160, 120, 40, 110, 30, 35, 15)
 #                 2.5 cm convergence threshold exits too early (EE up to 4.5 cm from block).
 #   2 — grasp: gripper needs the full window to physically close.
 #   3 — lift:  target tracks the held object (always 0.3 m above EE) — never converges.
+#   4 — move_above_box: early convergence exit causes gripper to open before block reaches box.
+#                       Must run full duration so block is physically above box before lower.
 #   5 — lower: object must settle in the box before the gripper opens.
-_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 5})
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
 
 # ---------------------------------------------------------------------------
 # Grasp failure detection
@@ -141,8 +143,9 @@ _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 5})
 # of the lift phase, the grasp failed and the episode is aborted immediately.
 # Object rests at OBJECT_Z ≈ 0.05 m; a successful lift should carry it well
 # above 0.15 m within 50 steps.
-_MIN_LIFT_Z: float = 0.10       # metres above world origin (block starts at 0.05)
-_GRASP_CHECK_STEP: int = 80     # step within lift phase at which to check
+_MIN_LIFT_Z: float = 0.10           # metres above world origin (block starts at 0.05)
+_GRASP_CHECK_STEP: int = 80         # step within lift phase at which to check
+_MAX_APPROACH_ERROR: float = 0.05   # abort if EE is farther than this from approach target at grasp start
 
 
 def _constant_gripper(num_envs: int, device: torch.device, value: float) -> torch.Tensor:
@@ -333,6 +336,18 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         elif phase_in_cycle == 1:
             target_pos_w, gripper_cmd = self._phase_approach_object(grasp_anchor_w, num_envs, device)
         elif phase_in_cycle == 2:
+            # Pre-grasp convergence check: abort if approach didn't converge.
+            if self._step_count == 0:
+                approach_target = grasp_anchor_w.clone()
+                approach_target[:, 2] += _GRASP_Z_OFFSET
+                dist = torch.linalg.norm(
+                    self._ee_pos_w(robot) - approach_target, dim=-1
+                ).max().item()
+                if dist > _MAX_APPROACH_ERROR:
+                    self._episode_done = True
+                    return self._joint_position_franka_action(
+                        env, approach_target, target_quat_w, _constant_gripper(num_envs, device, _GRIPPER_OPEN)
+                    )
             target_pos_w, gripper_cmd = self._phase_grasp(
                 grasp_anchor_w,
                 num_envs,
