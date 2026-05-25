@@ -37,7 +37,7 @@ _GRIPPER_CLOSE = -1.0
 
 _MAX_CARTESIAN_DELTA = 0.018
 _MAX_ROT_DELTA = 0.08
-_IK_DLS_LAMBDA = 0.003  # reduced from 0.01 for faster IK convergence
+_IK_DLS_LAMBDA = 0.01
 
 _HOVER_Z_OFFSET = 0.3
 _GRASP_Z_OFFSET = 0.02
@@ -104,12 +104,12 @@ _FRANKA_REST_JOINT_POS = {
 # Per-object phase durations: hover, approach, grasp, lift, move_above_box, lower, release/retreat
 # Reference (cup_stacking.py): (160, 80, 20, 100, 85, 35, 30) for a single-object task.
 # Toy-blocks adjustments vs the reference:
-#   approach: 120 steps — extra 40 steps for IK convergence near robot base singularity.
+#   approach: 200 steps — extended for IK convergence near robot base singularity.
 #   grasp: 40 steps — extra 20 steps so EE can descend fully to block before fingers close.
 #   hover/lift: +20 steps each — hover/lift offsets are 0.30 m here vs 0.15–0.20 m in cup-stacking.
 #   move_above_box: +25 steps — storage box can be up to ~0.4 m lateral travel from any block.
 #   lower: matched to reference (35) — 15 was too short for a clean gripper release.
-_PHASE_DURATIONS_PER_OBJECT = (160, 120, 40, 110, 100, 35, 30)
+_PHASE_DURATIONS_PER_OBJECT = (160, 200, 40, 110, 100, 35, 30)
 _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
 
 # ---------------------------------------------------------------------------
@@ -121,9 +121,9 @@ _EE_CONVERGENCE_THRESHOLD: float = 0.025  # 2.5 cm
 
 # Minimum step count that must elapse before early advancement is checked,
 # indexed by phase-in-cycle (0..6).
-_PHASE_MIN_STEPS: tuple[int, ...] = (160, 120, 40, 110, 30, 35, 15)
-#                                     ^    ^    ^   ^    ^   ^   ^
-#                              hover  apr  grsp lft mab  lwr ret
+_PHASE_MIN_STEPS: tuple[int, ...] = (160, 200, 40, 110, 100, 35, 15)
+#                                     ^    ^    ^   ^    ^    ^   ^
+#                              hover  apr  grsp lft mab  lwr  ret
 
 # Phases whose duration is always fixed (convergence check is skipped):
 #   0 — hover: linear-interpolated target only reaches final position at step 159.
@@ -143,9 +143,8 @@ _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 1, 2, 3, 4, 5})
 # of the lift phase, the grasp failed and the episode is aborted immediately.
 # Object rests at OBJECT_Z ≈ 0.05 m; a successful lift should carry it well
 # above 0.15 m within 50 steps.
-_MIN_LIFT_Z: float = 0.10           # metres above world origin (block starts at 0.05)
-_GRASP_CHECK_STEP: int = 80         # step within lift phase at which to check
-_MAX_APPROACH_ERROR: float = 0.05   # abort if EE is farther than this from approach target at grasp start
+_MIN_LIFT_Z: float = 0.10       # metres above world origin (block starts at 0.05)
+_GRASP_CHECK_STEP: int = 80     # step within lift phase at which to check
 
 
 def _constant_gripper(num_envs: int, device: torch.device, value: float) -> torch.Tensor:
@@ -336,18 +335,6 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         elif phase_in_cycle == 1:
             target_pos_w, gripper_cmd = self._phase_approach_object(grasp_anchor_w, num_envs, device)
         elif phase_in_cycle == 2:
-            # Pre-grasp convergence check: abort if approach didn't converge.
-            if self._step_count == 0:
-                approach_target = grasp_anchor_w.clone()
-                approach_target[:, 2] += _GRASP_Z_OFFSET
-                dist = torch.linalg.norm(
-                    self._ee_pos_w(robot) - approach_target, dim=-1
-                ).max().item()
-                if dist > _MAX_APPROACH_ERROR:
-                    self._episode_done = True
-                    return self._joint_position_franka_action(
-                        env, approach_target, target_quat_w, _constant_gripper(num_envs, device, _GRIPPER_OPEN)
-                    )
             target_pos_w, gripper_cmd = self._phase_grasp(
                 grasp_anchor_w,
                 num_envs,
