@@ -65,7 +65,12 @@ WORKSPACE_Y_MIN: float = -0.65  # table Y min is -0.677; -0.65 keeps a 2.7 cm ma
 WORKSPACE_Y_MAX: float = -0.28
 
 # Franka reach window measured from robot base (x, y)
-MIN_REACH: float = 0.15   # avoid base singularity
+# Robot base (panda_link0) is at Z=0.01 m; shoulder joint is at Z≈0.343 m.
+# The approach target is at block_z + 0.08 m ≈ 0.13 m, so the arm must drop
+# Δz ≈ 0.213 m from the shoulder.  At horizontal distances below ~0.30 m the
+# required joint configuration approaches a singularity, causing slow or failed
+# IK convergence.  0.15 m was too permissive — raised to 0.30 m.
+MIN_REACH: float = 0.30   # avoid near-singularity zone (~0.30 m empirical limit)
 MAX_REACH: float = 0.62   # IK reliability limit
 
 MIN_BLOCK_SPACING: float = 0.12   # min centre-to-centre distance between blocks
