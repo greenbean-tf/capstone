@@ -118,16 +118,19 @@ _PHASES_PER_OBJECT = len(_PHASE_DURATIONS_PER_OBJECT)
 # ---------------------------------------------------------------------------
 
 # Minimum step count before early exit is checked, indexed by phase-in-cycle.
-_PHASE_MIN_STEPS: tuple[int, ...] = (200, 40, 10, 30, 60, 35, 15)
-#                                     ^    ^   ^   ^   ^   ^   ^
-#                              hover  apr grsp lft mab lwr ret
+# Phase 0 (hover): min=80 — enough for IK to start tracking the interpolated
+#   target; for objects 2 and 3 there is no interpolation so convergence is
+#   reached in ~30–50 steps, saving up to 150 steps per object.
+# Phase 5 (lower): min=15 — IK covers 21 cm descent in ~12 steps, 15 is safe.
+_PHASE_MIN_STEPS: tuple[int, ...] = (80, 40, 10, 30, 60, 15, 15)
+#                                     ^   ^   ^   ^   ^   ^   ^
+#                              hover apr grsp lft mab lwr ret
 
-# Phases that always run to full duration (no early exit):
-#   0 — hover: linear-interpolated target reaches final position only at the last step.
-#   5 — lower: block must settle in box before gripper opens.
-# Phase 4 (move_above_box) uses convergence check so the robot waits until the
-# EE is truly above the box before lowering, regardless of travel distance.
-_FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
+# All phases now support early-exit via convergence checks; none are forced to
+# run the full duration.  Phase 0 and 5 each use a dedicated convergence check
+# (see advance()) rather than fixed timers so the robot moves on as soon as the
+# EE actually reaches its target.
+_FIXED_DURATION_PHASES: frozenset[int] = frozenset()
 
 # Phase 1 (approach): advance when EE is within this distance of the block
 # centre (obj_pos_w).  Using the actual block position rather than the
@@ -172,8 +175,14 @@ _APPROACH_HOLD_STEPS_PER_OBJECT: dict[str, int] = {
 # Phase 3 (lift): advance when object z exceeds this height (successfully lifted).
 _LIFT_SUCCESS_Z: float = 0.25   # metres above world origin
 
-# Phase 6 (retreat): advance when EE is within this distance of retreat target.
+# Phase 6 (retreat) and phase 4 (move_above_box): advance when EE is within
+# this distance of the target.
 _EE_CONVERGENCE_THRESHOLD: float = 0.025  # 2.5 cm
+
+# Phase 0 (hover): advance when EE is within this distance of the *final* hover
+# target.  Larger than EE_CONVERGENCE_THRESHOLD because the hover position is a
+# coarse waypoint — precision matters less than for approach/retreat.
+_HOVER_CONVERGENCE_THRESHOLD: float = 0.05  # 5 cm
 
 # ---------------------------------------------------------------------------
 # Grasp failure detection (lift phase)
@@ -278,6 +287,8 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._last_ee_pos_w: torch.Tensor | None = None
         self._last_obj_pos_w: torch.Tensor | None = None
         self._last_finger_pos: torch.Tensor | None = None
+        # Final (non-interpolated) hover target for phase 0 early-exit check.
+        self._hover_final_target_pos_w: torch.Tensor | None = None
 
     # ------------------------------------------------------------------
     # StateMachineBase interface
@@ -386,6 +397,11 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         drop_pos_w[:, 1] += drop_dy
 
         if phase_in_cycle == 0:
+            # Cache the final hover target (no interpolation) for the early-exit
+            # check in advance().  Updated every step so object drift is tracked.
+            hover_final = obj_pos_w.clone()
+            hover_final[:, 2] += _HOVER_Z_OFFSET
+            self._hover_final_target_pos_w = hover_final
             target_pos_w, gripper_cmd = self._phase_move_above_object(obj_pos_w, num_envs, device)
         elif phase_in_cycle == 1:
             target_pos_w, gripper_cmd = self._phase_approach_object(grasp_anchor_w, num_envs, device)
@@ -470,6 +486,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
         self._last_finger_pos = None
+        self._hover_final_target_pos_w = None
 
         if self._event >= len(self._events_dt):
             self._episode_done = True
@@ -489,12 +506,25 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._step_count += 1
         phase_in_cycle = self._event % _PHASES_PER_OBJECT
 
-        # Per-phase early-exit (only after minimum steps, only for non-fixed phases).
-        if (
-            phase_in_cycle not in _FIXED_DURATION_PHASES
-            and self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]
-        ):
-            if phase_in_cycle == 1:
+        # Per-phase early-exit (only after minimum steps).
+        if self._step_count >= _PHASE_MIN_STEPS[phase_in_cycle]:
+            if phase_in_cycle == 0:
+                # Hover → Approach: EE has reached the final hover position.
+                # Objects 2 and 3 skip linear interpolation so converge in ~30-50
+                # steps; object 1 converges near the end of the interpolation ramp.
+                if self._hover_final_target_pos_w is not None and self._last_ee_pos_w is not None:
+                    dist = torch.linalg.norm(
+                        self._last_ee_pos_w - self._hover_final_target_pos_w, dim=-1
+                    ).max().item()
+                    if dist < _HOVER_CONVERGENCE_THRESHOLD:
+                        self._phase_convergence_count += 1
+                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                            self._do_advance_phase()
+                            return
+                    else:
+                        self._phase_convergence_count = 0
+
+            elif phase_in_cycle == 1:
                 # Approach → Grasp: measure EE distance to the actual block
                 # centre, not the computed approach target.  This is more
                 # reliable because retreat/xy offsets in the target can
@@ -555,6 +585,21 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
                     else:
                         self._phase_convergence_count = 0
 
+            elif phase_in_cycle == 5:
+                # Lower → Retreat: EE has reached the release height.
+                # Gripper stays closed during lower; releasing happens in phase 6.
+                if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
+                    dist = torch.linalg.norm(
+                        self._last_ee_pos_w - self._last_target_pos_w, dim=-1
+                    ).max().item()
+                    if dist < _EE_CONVERGENCE_THRESHOLD:
+                        self._phase_convergence_count += 1
+                        if self._phase_convergence_count >= _CONVERGENCE_HOLD_STEPS:
+                            self._do_advance_phase()
+                            return
+                    else:
+                        self._phase_convergence_count = 0
+
             elif phase_in_cycle == 6:
                 # Retreat → next object: EE converged to retreat target.
                 if self._last_target_pos_w is not None and self._last_ee_pos_w is not None:
@@ -593,6 +638,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         self._last_ee_pos_w = None
         self._last_obj_pos_w = None
         self._last_finger_pos = None
+        self._hover_final_target_pos_w = None
 
     # ------------------------------------------------------------------
     # IK / control helpers (same as CupStackingStateMachine)
