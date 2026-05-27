@@ -136,7 +136,17 @@ _FIXED_DURATION_PHASES: frozenset[int] = frozenset({0, 5})
 # 3-D distance to the block centre is ~8.4 cm, so 10 cm gives a safe margin.
 # Do NOT tighten below ~0.10: the DLS IK oscillates near the exact target,
 # and a stricter threshold forces the arm to stay in that noisy zone longer.
-_EE_TO_BLOCK_THRESHOLD: float = 0.10  # 10 cm
+_EE_TO_BLOCK_THRESHOLD: float = 0.10  # 10 cm  (3-D)
+
+# XY-only alignment check applied on top of the 3-D threshold.
+# Ensures the gripper is laterally centred over the block before closing,
+# independent of height.  Per-object because the cylinder requires tighter
+# lateral alignment than upright blocks.
+_APPROACH_XY_THRESHOLD_PER_OBJECT: dict[str, float] = {
+    "green_block": 0.05,   # 5 cm — upright block, generous
+    "blue_block":  0.03,   # 3 cm — cylinder on side, tight
+    "red_block":   0.05,   # 5 cm — upright block, generous
+}
 
 # Phase 2 (grasp): advance when total finger width exceeds this (fingers did not
 # close fully → something is between them).
@@ -481,11 +491,12 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
                 hold_required = _APPROACH_HOLD_STEPS_PER_OBJECT.get(
                     obj_name, _CONVERGENCE_HOLD_STEPS
                 )
+                xy_threshold = _APPROACH_XY_THRESHOLD_PER_OBJECT.get(obj_name, 0.05)
                 if self._last_ee_pos_w is not None and self._last_obj_pos_w is not None:
-                    dist = torch.linalg.norm(
-                        self._last_ee_pos_w - self._last_obj_pos_w, dim=-1
-                    ).max().item()
-                    if dist < _EE_TO_BLOCK_THRESHOLD:
+                    diff = self._last_ee_pos_w - self._last_obj_pos_w
+                    dist_3d = torch.linalg.norm(diff, dim=-1).max().item()
+                    dist_xy = torch.linalg.norm(diff[:, :2], dim=-1).max().item()
+                    if dist_3d < _EE_TO_BLOCK_THRESHOLD and dist_xy < xy_threshold:
                         self._phase_convergence_count += 1
                         if self._phase_convergence_count >= hold_required:
                             self._do_advance_phase()
