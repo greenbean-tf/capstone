@@ -84,7 +84,7 @@ The script places blocks randomly within the robot's reachable workspace.
 ```bash
 cd capstone
 
-python scripts/datagen/generate_synthetic_poses.py \
+python3 scripts/datagen/generate_synthetic_poses.py \
     --num_episodes 200 \
     --seed 42 \
     --output data/synthetic/object_poses.json
