@@ -404,6 +404,7 @@ def main():
 
     original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
     cnt = 0
+    fail_cnt = 0
     success_ID = []
     try:
         while simulation_app.is_running() and not simulation_app.is_exiting() and not interrupted:
@@ -434,13 +435,14 @@ def main():
                         cnt += 1
                         print(
                             f"\033[92m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"success ✓  |  {cnt} successful  |  {remaining} remaining\033[0m"
+                            f"success ✓  |  {cnt} ✓  {fail_cnt} ✗  |  {remaining} remaining\033[0m"
                         )
                         success_ID.append(episode_attempted)
                     else:
+                        fail_cnt += 1
                         print(
                             f"\033[91m[Episode {episode_attempted}/{len(episodes)}] "
-                            f"fail ✗  |  {cnt} successful  |  {remaining} remaining\033[0m"
+                            f"fail ✗  |  {cnt} ✓  {fail_cnt} ✗  |  {remaining} remaining\033[0m"
                         )
                     if should_break:
                         break
