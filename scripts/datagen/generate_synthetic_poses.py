@@ -55,13 +55,15 @@ OBJECT_NAMES: tuple[str, ...] = ("green_block", "blue_block", "red_block")
 # ---------------------------------------------------------------------------
 # Workspace bounds (world frame)
 # Table surface (counter_right_main_group) bounding box: X=[0.003, 0.703], Y=[-0.677, -0.027]
-# Y_MIN set to -0.65 to keep a 2.7 cm margin from the table edge at Y=-0.677.
-# Day-1 failure confirmed: Y ≈ 0 is outside effective reach (FSM fails).
+# Y_MIN=-0.45: at X≈ROBOT_X the closest reachable Y is −0.74+0.30=−0.44,
+#   so −0.65 (old value) generated many points that MIN_REACH immediately
+#   rejected, wasting rejection-sampling budget.
+# Y_MAX=-0.28: Day-1 failure confirmed Y≈0 is outside effective reach.
 # ---------------------------------------------------------------------------
 
 WORKSPACE_X_MIN: float = 0.05
 WORKSPACE_X_MAX: float = 0.60
-WORKSPACE_Y_MIN: float = -0.65  # table Y min is -0.677; -0.65 keeps a 2.7 cm margin
+WORKSPACE_Y_MIN: float = -0.45  # consistent with MIN_REACH=0.30 (was -0.65)
 WORKSPACE_Y_MAX: float = -0.28
 
 # Franka reach window measured from robot base (x, y)
@@ -69,11 +71,14 @@ WORKSPACE_Y_MAX: float = -0.28
 # The approach target is at block_z + 0.08 m ≈ 0.13 m, so the arm must drop
 # Δz ≈ 0.213 m from the shoulder.  At horizontal distances below ~0.30 m the
 # required joint configuration approaches a singularity, causing slow or failed
-# IK convergence.  0.15 m was too permissive — raised to 0.30 m.
-MIN_REACH: float = 0.30   # avoid near-singularity zone (~0.30 m empirical limit)
-MAX_REACH: float = 0.62   # IK reliability limit
+# IK convergence.
+# MAX_REACH=0.58: reduced from 0.62 to keep a safety buffer from the outer
+#   singularity (full arm extension), where IK also becomes unreliable.
+MIN_REACH: float = 0.30   # avoid near-singularity zone
+MAX_REACH: float = 0.58   # IK reliability limit (was 0.62; buffer from full extension)
 
-MIN_BLOCK_SPACING: float = 0.12   # min centre-to-centre distance between blocks
+MIN_BLOCK_SPACING: float = 0.15   # min centre-to-centre distance (was 0.12; extra clearance
+                                  # so the arm can approach one block without hitting another)
 MIN_DIST_FROM_BOX: float = 0.20   # min distance from storage box centre
 
 MAX_ATTEMPTS: int = 10_000        # rejection sampling limit per block
