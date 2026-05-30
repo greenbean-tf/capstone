@@ -94,6 +94,7 @@ class ColorSortBlocksSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.8, 0.1)),
         ),
     )
@@ -108,6 +109,7 @@ class ColorSortBlocksSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.9)),
         ),
     )
@@ -122,6 +124,7 @@ class ColorSortBlocksSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.1, 0.1)),
         ),
     )
@@ -191,6 +194,10 @@ class ColorSortBlocksEnvCfg(SingleArmFrankaTaskEnvCfg):
 
     def __post_init__(self) -> None:
         super().__post_init__()
+
+        self.viewer.eye = (0.8, 0.87, 0.67)
+        self.viewer.lookat = (0.4, -1.3, -0.2)
+        self.dynamic_reset_gripper_effort_limit = False
 
         self.scene.robot.init_state.pos = (0.35, -0.74, 0.01)
         self.scene.robot.init_state.rot = (0.707, 0.0, 0.0, 0.707)

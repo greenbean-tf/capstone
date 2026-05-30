@@ -78,6 +78,7 @@ class ColorSortBlocksEvalSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.8, 0.1)),
         ),
     )
@@ -92,6 +93,7 @@ class ColorSortBlocksEvalSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.1, 0.1, 0.9)),
         ),
     )
@@ -106,6 +108,7 @@ class ColorSortBlocksEvalSceneCfg(SingleArmFrankaTaskSceneCfg):
         spawn=sim_utils.UsdFileCfg(
             usd_path=str(LIVING_OBJECTS_ROOT / "Storage_Box" / "storage_box.usd"),
             mass_props=MassPropertiesCfg(mass=0.5),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.9, 0.1, 0.1)),
         ),
     )
