@@ -208,8 +208,7 @@ class ColorSortBlocksEnvCfg(SingleArmFrankaTaskEnvCfg):
 
         parse_usd_and_create_subassets(LIVING_ROOM_USD_PATH, self)
 
-    def object_pose_config(self) -> ObjectPoseConfig:
-        return ObjectPoseConfig(
+        self.object_pose_cfg = ObjectPoseConfig(
             tag_to_object=TAG_TO_OBJECT,
             anchor_tag_id=ANCHOR_TAG_ID,
             anchor_world_pose=ANCHOR_WORLD_POSE,
@@ -217,4 +216,5 @@ class ColorSortBlocksEnvCfg(SingleArmFrankaTaskEnvCfg):
             object_roll=OBJECT_ROLL,
             object_pitch=OBJECT_PITCH,
             per_object_yaw_offset=PER_OBJECT_YAW_OFFSET,
+            use_fixed_yaw=True,
         )
