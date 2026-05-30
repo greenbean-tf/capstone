@@ -54,14 +54,15 @@ OBJECT_NAMES: tuple[str, ...] = ("green_block", "blue_block", "red_block")
 
 WORKSPACE_X_MIN: float = 0.05
 WORKSPACE_X_MAX: float = 0.60
-WORKSPACE_Y_MIN: float = -0.45
+# All baskets sit at Y=-0.55. Basket half-width ≈ 0.12 m → +Y edge at -0.43.
+# Adding 10 cm clearance past that edge: -0.43 + 0.10 = -0.33.
+WORKSPACE_Y_MIN: float = -0.33
 WORKSPACE_Y_MAX: float = -0.28
 
 MIN_REACH: float = 0.30
 MAX_REACH: float = 0.58
 
 MIN_BLOCK_SPACING: float = 0.15
-MIN_DIST_FROM_BASKET: float = 0.20   # keep blocks away from every basket
 
 MAX_ATTEMPTS: int = 10_000
 
@@ -89,10 +90,6 @@ def _sample_position(
 
         reach = _dist2d(x, y, ROBOT_X, ROBOT_Y)
         if reach < MIN_REACH or reach > MAX_REACH:
-            continue
-
-        # Keep block away from ALL three baskets.
-        if any(_dist2d(x, y, bx, by) < MIN_DIST_FROM_BASKET for bx, by in BASKET_POSITIONS):
             continue
 
         if any(_dist2d(x, y, px, py) < MIN_BLOCK_SPACING for px, py in placed):
@@ -150,7 +147,6 @@ def main() -> None:
     out.write_text(json.dumps(episodes, indent=2))
 
     print(f"Wrote {len(episodes)} synthetic episodes → {out}")
-    print(f"Baskets avoided: {BASKET_POSITIONS}")
     print(
         f"Workspace  X=[{WORKSPACE_X_MIN}, {WORKSPACE_X_MAX}]  "
         f"Y=[{WORKSPACE_Y_MIN}, {WORKSPACE_Y_MAX}]  (world frame)"
