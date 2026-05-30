@@ -54,10 +54,12 @@ OBJECT_NAMES: tuple[str, ...] = ("green_block", "blue_block", "red_block")
 
 WORKSPACE_X_MIN: float = 0.05
 WORKSPACE_X_MAX: float = 0.60
-# All baskets sit at Y=-0.55. Basket half-width ≈ 0.12 m → +Y edge at -0.43.
-# Adding 10 cm clearance past that edge: -0.43 + 0.10 = -0.33.
-WORKSPACE_Y_MIN: float = -0.33
-WORKSPACE_Y_MAX: float = -0.28
+# All baskets sit at Y=-0.55; basket +Y outer wall at -0.447 m (measured from USD).
+# Y_MIN=-0.36: block edge is ~5 cm from basket outer wall, enough for arm approach.
+# Y_MAX=-0.15: just within robot reach (MAX_REACH=0.58 m from Y=-0.74 → -0.16 m);
+# the reach check filters edge cases, giving ~0.21 m of usable Y range.
+WORKSPACE_Y_MIN: float = -0.36
+WORKSPACE_Y_MAX: float = -0.15
 
 MIN_REACH: float = 0.30
 MAX_REACH: float = 0.58
