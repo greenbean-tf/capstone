@@ -68,18 +68,41 @@ export HF_USER=greenbeanleo
 ## 開始訓練
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 lerobot-train \
+mkdir -p logs && \
+PYTHONUNBUFFERED=1 CUDA_VISIBLE_DEVICES=0 lerobot-train \
   --dataset.repo_id=greenbeanleo/toyblock_synth_dataset \
   --dataset.video_backend=pyav \
+  --dataset.image_transforms.enable=true \
   --policy.type=diffusion \
-  --output_dir=outputs/train/toyblocks_v1 \
-  --job_name=toyblocks_v1 \
+  --output_dir=outputs/train/toyblocks_v8 \
+  --job_name=toyblocks_v5 \
   --policy.device=cuda \
+  --policy.repo_id=greenbeanleo/toyblocks_policy_v5 \
+  --batch_size=64 \
+  --steps=1000000 \
+  --policy.n_obs_steps=2 \
+  --policy.num_inference_steps=100 \
+  --policy.use_separate_rgb_encoder_per_camera=true \
+  --policy.crop_shape="[240,240]" \
   --wandb.enable=false \
-  --policy.repo_id=greenbeanleo/toyblocks_policy
+  2>&1 | tee logs/toyblocks_v8.log
 ```
 
+> **Log 說明：** `PYTHONUNBUFFERED=1` 停用 Python 的輸出緩衝，確保每行 log 即時寫入檔案（若缺少此設定，crash 時最後一段 log 可能遺失）。Log 存在 `logs/toyblocks_v8.log`，與 `output_dir` 分開放，避免和 lerobot-train 建立資料夾的時機衝突。
+
 > **WandB 說明：** 實驗室網路封鎖 wandb.ai，請使用 `--wandb.enable=false`。
+>
+> **參數說明（相較舊版的改動）：**
+>
+> | 參數 | 舊值 | 新值 | 原因 |
+> |------|------|------|------|
+> | `batch_size` | 8 | 64 | 論文標準值，梯度估計更穩定 |
+> | `steps` | 200,000 | 1,000,000 | 提升等效訓練 epoch 數 |
+> | `dataset.image_transforms.enable` | false | true | 開啟色彩/仿射 augmentation |
+> | `policy.n_obs_steps` | 3 | 2 | 論文 ablation 最佳值 |
+> | `policy.num_inference_steps` | null | 100 | 明確設定 DDPM 推論步數 |
+> | `policy.use_separate_rgb_encoder_per_camera` | false | true | wrist/front 雙攝影機分開 encoder |
+> | `policy.crop_shape` | [84,84] | [240,240] | 覆蓋率從 2.3% 提升至 26%；`resize_shape` 雖更接近論文做法，但 rollout 環境（lerobot 0.4.2）會將其 strip 掉導致 train/test 不一致，故改用 crop_shape 直接裁切 |
 
 ### 離開 tmux（訓練繼續在背景跑）
 
@@ -99,10 +122,16 @@ gpustat
 
 ### 查看訓練 log
 
-回到 tmux：
+回到 tmux 看即時輸出：
 
 ```bash
 LD_LIBRARY_PATH="" tmux attach -t train
+```
+
+或在另一個視窗追蹤 log 檔：
+
+```bash
+tail -f logs/toyblocks_v8.log
 ```
 
 Log 格式說明：
@@ -113,25 +142,25 @@ step:84K  smpl:670K  ep:318  epch:39.72  loss:0.003  grdn:0.245  lr:6.5e-06
 
 | 欄位 | 說明 |
 |------|------|
-| `step` | 目前訓練步數（總共 100,000 步）|
+| `step` | 目前訓練步數（總共 1,000,000 步）|
 | `loss` | 損失值，越小越好 |
 | `epch` | 目前 epoch 進度 |
 | `lr` | 目前學習率 |
 
 ### 估算剩餘時間
 
-每步約 0.045 秒，100,000 步總共約 **75 分鐘**。
+每步約 0.1～0.15 秒（batch_size=64，雙攝影機分開 encoder），1,000,000 步總共約 **28～42 小時**。建議在 tmux 內執行並離開讓它在背景跑。
 
 ---
 
 ## 訓練結果
 
-訓練完成後自動上傳到 HuggingFace：`https://huggingface.co/greenbeanleo/toyblocks_policy`
+訓練完成後自動上傳到 HuggingFace：`https://huggingface.co/greenbeanleo/toyblocks_policy_v5`
 
 本地結果存在：
 
 ```
-outputs/train/toyblocks_v1/
+outputs/train/toyblocks_v8/
 ├── checkpoints/        # 模型 checkpoint（每 20000 步存一次）
 ├── train_config.json   # 所有超參數
 └── logs/               # 訓練 log
