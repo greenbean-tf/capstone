@@ -38,6 +38,14 @@ parser.add_argument(
 )
 parser.add_argument("--resume", action="store_true", help="Whether to resume recording in the existing dataset file.")
 parser.add_argument(
+    "--pose_start_idx", type=int, default=0,
+    help=(
+        "Index in object_poses to start from (default 0 = beginning of file). "
+        "Use -1 for legacy behaviour: auto-detect start from recorded episode count "
+        "(only correct when resuming an interrupted run of the SAME poses file)."
+    ),
+)
+parser.add_argument(
     "--object_poses",
     type=str,
     required=True,
@@ -390,7 +398,12 @@ def main():
         print(f"Resume recording from existing dataset file with {resume_recorded_demo_count} demonstrations.")
     current_recorded_demo_count = resume_recorded_demo_count
 
-    next_episode_idx = min(resume_recorded_demo_count, len(episodes))
+    if args_cli.pose_start_idx < 0:
+        # Legacy mode: infer pose start from recorded episode count.
+        # Only correct when resuming an interrupted run of the SAME poses file.
+        next_episode_idx = min(resume_recorded_demo_count, len(episodes))
+    else:
+        next_episode_idx = min(args_cli.pose_start_idx, len(episodes))
     if next_episode_idx >= len(episodes):
         print(f"Resume count {next_episode_idx} ≥ total episodes {len(episodes)}; nothing to do.")
         env.close()
