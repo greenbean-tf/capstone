@@ -235,10 +235,17 @@ def _auto_tag_hf_dataset(repo_id: str) -> None:
     try:
         from huggingface_hub import HfApi
         api = HfApi()
+        # Delete existing tag first so it always points to the latest commit.
+        # This is necessary when resuming datagen: the tag would otherwise
+        # remain stuck at the first upload and lerobot would only load that
+        # initial batch of episodes.
+        try:
+            api.delete_tag(repo_id, tag=version, repo_type="dataset")
+        except Exception:
+            pass  # Tag doesn't exist yet — that's fine
         api.create_tag(repo_id, tag=version, repo_type="dataset")
-        print(f"[tag] Created HuggingFace dataset tag '{version}' for {repo_id}")
+        print(f"[tag] Updated HuggingFace dataset tag '{version}' for {repo_id}")
     except Exception as e:
-        # Tag may already exist — not an error
         print(f"[tag] HF tag creation skipped: {e}")
 
 
