@@ -94,8 +94,12 @@ NEAR_BOX_WORKSPACE_X_MIN: float = 0.35
 NEAR_BOX_WORKSPACE_X_MAX: float = 0.65
 NEAR_BOX_WORKSPACE_Y_MIN: float = -0.55
 NEAR_BOX_WORKSPACE_Y_MAX: float = -0.25
-NEAR_BOX_MIN_DIST: float = 0.08   # avoid spawning inside the box itself
-NEAR_BOX_MAX_DIST: float = 0.35   # keep all blocks within 35 cm of box centre
+# The termination condition uses x_range=(-0.12, 0.12), y_range=(-0.12, 0.12),
+# meaning the box interior is ±0.12 m from centre. Adding wall thickness (~0.02 m)
+# and a block half-size buffer (~0.03 m) gives a safe minimum of ~0.17 m.
+# Use 0.20 m to match the normal-mode clearance and avoid physics instability.
+NEAR_BOX_MIN_DIST: float = 0.20   # same as normal mode — avoids spawning inside box
+NEAR_BOX_MAX_DIST: float = 0.40   # keep all blocks within 40 cm of box centre
 
 
 # ---------------------------------------------------------------------------
