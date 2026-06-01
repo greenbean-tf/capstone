@@ -50,7 +50,7 @@ hf --version
 
 ```bash
 hf auth login --token <YOUR_HF_TOKEN>
-export HF_USER=<your-huggingface-username>
+export HF_USER=greenbeanleo
 ```
 
 ### 5. Download object_poses.json (UMI real data)
@@ -79,7 +79,10 @@ hf download yujieee0616/toyblock_dataset_day1 \
 ### 6. Generate synthetic object poses (no real recordings needed)
 
 Use this instead of Step 5 when you want more data or don't have UMI recordings.
-The script places blocks randomly within the robot's reachable workspace.
+
+There are two modes:
+
+**Normal mode** — blocks placed randomly across the workspace:
 
 ```bash
 cd capstone
@@ -90,11 +93,29 @@ python3 scripts/datagen/generate_synthetic_poses.py \
     --output data/synthetic/object_poses.json
 ```
 
+**Near-box mode** — blocks placed near the storage box (recommended):
+
+> ⚠️ TA hint: during evaluation, blocks are mostly placed close to the storage box. Use `--near_box` to generate training data that matches the evaluation scenario.
+
+```bash
+python3 scripts/datagen/generate_synthetic_poses.py \
+    --num_episodes 200 \
+    --seed 42 \
+    --near_box \
+    --output data/synthetic/object_poses.json
+```
+
 | Flag | Description |
 |------|-------------|
 | `--num_episodes` | Number of episodes to generate (200 → ~70 successes at 35% FSM rate) |
 | `--seed` | Random seed for reproducibility |
+| `--near_box` | Place blocks within 35 cm of the storage box (matches evaluation scenario) |
 | `--output` | Output path (pass this to `--object_poses` in Part 3) |
+
+| Mode | Workspace | Box distance |
+|------|-----------|-------------|
+| Normal | X=[0.05, 0.60] Y=[-0.45, -0.28] | ≥ 0.20 m (away from box) |
+| `--near_box` | X=[0.35, 0.65] Y=[-0.55, -0.25] | 0.08–0.35 m (near box) |
 
 The script runs in milliseconds on CPU — no GPU or Docker needed.
 Pass `data/synthetic/object_poses.json` as `--object_poses` in Part 3 Step 2.
@@ -148,7 +169,7 @@ The container has its own filesystem — you must login again inside:
 
 ```bash
 hf auth login --token <YOUR_HF_TOKEN>
-export HF_USER=<your-huggingface-username>
+export HF_USER=greenbeanleo
 ```
 
 ### 2. Run data generation
@@ -202,15 +223,32 @@ Wait for `Replayed all N episodes. Exiting the app.` before stopping.
 If you closed the container or are on a fresh GlowsAI instance, the local lerobot cache is empty.
 You must **download the existing dataset first** before using `--resume`, otherwise the script cannot determine how many episodes were already recorded.
 
-> ⚠️ **Path distinction:** `data/synthetic/` is where your scene config (`object_poses.json`) lives. The lerobot cache at `/root/.cache/huggingface/lerobot/${HF_USER}/<dataset_repo_name>` is where training data is stored. The `--local-dir` below **must end with `<dataset_repo_name>`**, not `synthetic` or any other name — it must match exactly what you pass to `--lerobot_dataset_repo_id`.
+> ⚠️ **Path distinction:** `data/synthetic/` is where your scene config (`object_poses.json`) lives. The lerobot cache at `/root/.cache/huggingface/lerobot/greenbeanleo/toyblock_synth_dataset` is where training data is stored. The `--local-dir` below **must end with `toyblock_synth_dataset`** — it must match exactly what you pass to `--lerobot_dataset_repo_id`.
+
+**Step 1：下載現有資料集到 cache**
 
 ```bash
-# Step 1: download existing dataset into the lerobot cache location
-hf download ${HF_USER}/<dataset_repo_name> \
+hf download greenbeanleo/toyblock_synth_dataset \
     --repo-type dataset \
-    --local-dir /root/.cache/huggingface/lerobot/${HF_USER}/<dataset_repo_name>
+    --revision v3.0 \
+    --local-dir /root/.cache/huggingface/lerobot/greenbeanleo/toyblock_synth_dataset
+```
 
-# Step 2: resume generation with the next batch of poses
+**Step 2：生成新一批 synthetic poses**
+
+```bash
+python3 scripts/datagen/generate_synthetic_poses.py \
+    --num_episodes 200 \
+    --seed 123 \
+    --near_box \
+    --output data/synthetic_batch2/object_poses.json
+```
+
+> 每次接續生成時換一個 `--seed`（第一批用 42，第二批用 123，第三批用 456…），避免生成重複的物體位置。`--near_box` 讓積木生成在盒子附近，貼近評分情境。
+
+**Step 3：接續生成**
+
+```bash
 python scripts/datagen/generate.py \
     --task HCIS-ToyBlocksCollection-SingleArm-v0 \
     --num_envs 1 \
@@ -218,19 +256,33 @@ python scripts/datagen/generate.py \
     --enable_cameras \
     --record \
     --use_lerobot_recorder \
-    --lerobot_dataset_repo_id ${HF_USER}/<dataset_repo_name> \
-    --object_poses data/<next_batch>/object_poses.json \
+    --lerobot_dataset_repo_id greenbeanleo/toyblock_synth_dataset \
+    --object_poses data/synthetic_batch2/object_poses.json \
     --resume \
     --step_hz 10000
+```
 
-# Step 3: upload the combined dataset (overwrites the HF repo with all episodes)
-hf upload ${HF_USER}/<dataset_repo_name> \
-    /root/.cache/huggingface/lerobot/${HF_USER}/<dataset_repo_name>/ \
+等出現 `Replayed all N episodes. Exiting the app.` 再繼續。
+
+`--resume` 會讀 `/root/.cache/huggingface/lerobot/greenbeanleo/toyblock_synth_dataset/meta/info.json` 取得現有 episode 數，從最後一筆繼續接。
+
+**Step 4：上傳合併後的完整資料集**
+
+```bash
+hf upload greenbeanleo/toyblock_synth_dataset \
+    /root/.cache/huggingface/lerobot/greenbeanleo/toyblock_synth_dataset/ \
     --repo-type dataset
 ```
 
-`--resume` reads `/root/.cache/huggingface/lerobot/{HF_USER}/{repo_name}/meta/info.json`
-to find the existing episode count, then picks up from where you left off.
+> `generate.py` 結束時會自動更新 HuggingFace 上的 `v3.0` tag，指向最新的 commit。不需要手動更新 tag。
+
+**Step 5：回 cecnl 機器訓練前，清除舊 cache**
+
+```bash
+rm -rf ~/.cache/huggingface/lerobot/greenbeanleo/toyblock_synth_dataset
+```
+
+這樣 lerobot-train 才會重新下載包含新 episodes 的完整資料集。
 
 ### 3. Monitor VRAM (optional, in a second tmux window)
 

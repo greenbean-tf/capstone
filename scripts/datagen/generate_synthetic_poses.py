@@ -79,9 +79,23 @@ MAX_REACH: float = 0.58   # IK reliability limit (was 0.62; buffer from full ext
 
 MIN_BLOCK_SPACING: float = 0.15   # min centre-to-centre distance (was 0.12; extra clearance
                                   # so the arm can approach one block without hitting another)
-MIN_DIST_FROM_BOX: float = 0.20   # min distance from storage box centre
+MIN_DIST_FROM_BOX: float = 0.20   # min distance from storage box centre (normal mode)
 
 MAX_ATTEMPTS: int = 10_000        # rejection sampling limit per block
+
+# ---------------------------------------------------------------------------
+# Near-box mode parameters
+# TA hint: during evaluation blocks are mostly placed near the storage box.
+# In near-box mode the workspace is shifted toward the box and a
+# MAX_DIST_FROM_BOX constraint replaces the default MIN_DIST_FROM_BOX.
+# ---------------------------------------------------------------------------
+
+NEAR_BOX_WORKSPACE_X_MIN: float = 0.35
+NEAR_BOX_WORKSPACE_X_MAX: float = 0.65
+NEAR_BOX_WORKSPACE_Y_MIN: float = -0.55
+NEAR_BOX_WORKSPACE_Y_MAX: float = -0.25
+NEAR_BOX_MIN_DIST: float = 0.08   # avoid spawning inside the box itself
+NEAR_BOX_MAX_DIST: float = 0.35   # keep all blocks within 35 cm of box centre
 
 
 # ---------------------------------------------------------------------------
@@ -101,17 +115,35 @@ def _world_to_tvec(wx: float, wy: float) -> list[float]:
 def _sample_position(
     rng: random.Random,
     placed: list[tuple[float, float]],
+    near_box: bool = False,
 ) -> tuple[float, float]:
-    """Rejection-sample one valid world (x, y) for a block."""
+    """Rejection-sample one valid world (x, y) for a block.
+
+    Args:
+        near_box: If True, sample from the region near the storage box
+                  (TA hint: evaluation blocks are mostly placed near the box).
+    """
+    if near_box:
+        x_min, x_max = NEAR_BOX_WORKSPACE_X_MIN, NEAR_BOX_WORKSPACE_X_MAX
+        y_min, y_max = NEAR_BOX_WORKSPACE_Y_MIN, NEAR_BOX_WORKSPACE_Y_MAX
+        min_box_dist = NEAR_BOX_MIN_DIST
+        max_box_dist = NEAR_BOX_MAX_DIST
+    else:
+        x_min, x_max = WORKSPACE_X_MIN, WORKSPACE_X_MAX
+        y_min, y_max = WORKSPACE_Y_MIN, WORKSPACE_Y_MAX
+        min_box_dist = MIN_DIST_FROM_BOX
+        max_box_dist = float("inf")
+
     for _ in range(MAX_ATTEMPTS):
-        x = rng.uniform(WORKSPACE_X_MIN, WORKSPACE_X_MAX)
-        y = rng.uniform(WORKSPACE_Y_MIN, WORKSPACE_Y_MAX)
+        x = rng.uniform(x_min, x_max)
+        y = rng.uniform(y_min, y_max)
 
         reach = _dist2d(x, y, ROBOT_X, ROBOT_Y)
         if reach < MIN_REACH or reach > MAX_REACH:
             continue
 
-        if _dist2d(x, y, BOX_X, BOX_Y) < MIN_DIST_FROM_BOX:
+        box_dist = _dist2d(x, y, BOX_X, BOX_Y)
+        if box_dist < min_box_dist or box_dist > max_box_dist:
             continue
 
         if any(_dist2d(x, y, px, py) < MIN_BLOCK_SPACING for px, py in placed):
@@ -125,11 +157,11 @@ def _sample_position(
     )
 
 
-def _generate_episode(rng: random.Random, idx: int) -> dict:
+def _generate_episode(rng: random.Random, idx: int, near_box: bool = False) -> dict:
     placed: list[tuple[float, float]] = []
     objects = []
     for name in OBJECT_NAMES:
-        x, y = _sample_position(rng, placed)
+        x, y = _sample_position(rng, placed, near_box=near_box)
         placed.append((x, y))
         objects.append(
             {
@@ -168,23 +200,40 @@ def main() -> None:
         "--output", type=str, default="data/synthetic/object_poses.json",
         help="Destination path for the generated file.",
     )
+    parser.add_argument(
+        "--near_box", action="store_true",
+        help=(
+            "Place blocks near the storage box (within 35 cm). "
+            "Use this to match the TA evaluation scenario where blocks are "
+            "mostly placed close to the box."
+        ),
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
-    episodes = [_generate_episode(rng, i) for i in range(args.num_episodes)]
+    episodes = [_generate_episode(rng, i, near_box=args.near_box) for i in range(args.num_episodes)]
 
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(episodes, indent=2))
 
     print(f"Wrote {len(episodes)} synthetic episodes → {out}")
-    print(
-        f"Workspace  X=[{WORKSPACE_X_MIN}, {WORKSPACE_X_MAX}]  "
-        f"Y=[{WORKSPACE_Y_MIN}, {WORKSPACE_Y_MAX}]  (world frame)"
-    )
+    if args.near_box:
+        print(
+            f"Mode: near-box  "
+            f"X=[{NEAR_BOX_WORKSPACE_X_MIN}, {NEAR_BOX_WORKSPACE_X_MAX}]  "
+            f"Y=[{NEAR_BOX_WORKSPACE_Y_MIN}, {NEAR_BOX_WORKSPACE_Y_MAX}]  "
+            f"box_dist=[{NEAR_BOX_MIN_DIST}, {NEAR_BOX_MAX_DIST}]m"
+        )
+    else:
+        print(
+            f"Mode: random  "
+            f"X=[{WORKSPACE_X_MIN}, {WORKSPACE_X_MAX}]  "
+            f"Y=[{WORKSPACE_Y_MIN}, {WORKSPACE_Y_MAX}]  (world frame)"
+        )
     print(
         f"Constraints  reach=[{MIN_REACH}, {MAX_REACH}]m  "
-        f"block_spacing>={MIN_BLOCK_SPACING}m  box_clearance>={MIN_DIST_FROM_BOX}m"
+        f"block_spacing>={MIN_BLOCK_SPACING}m"
     )
 
 
