@@ -115,9 +115,9 @@ python3 scripts/datagen/generate_synthetic_poses.py \
 | Mode | Workspace | Box distance |
 |------|-----------|-------------|
 | Normal | X=[0.05, 0.60] Y=[-0.45, -0.28] | ≥ 0.20 m (away from box) |
-| `--near_box` | X=[0.35, 0.65] Y=[-0.55, -0.25] | 0.20–0.40 m (near box) |
+| `--near_box` | annulus sampling around box | 0.20–0.45 m (near box) |
 
-> The 0.20 m minimum prevents blocks from spawning inside the box (box interior is ±0.12 m from centre).
+> The 0.20 m minimum prevents blocks from spawning inside the box (box interior is ±0.12 m from centre). Near-box mode uses polar annulus sampling for high acceptance rate.
 
 The script runs in milliseconds on CPU — no GPU or Docker needed.
 Pass `data/synthetic/object_poses.json` as `--object_poses` in Part 3 Step 2.

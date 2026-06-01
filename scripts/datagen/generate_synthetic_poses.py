@@ -90,16 +90,18 @@ MAX_ATTEMPTS: int = 10_000        # rejection sampling limit per block
 # MAX_DIST_FROM_BOX constraint replaces the default MIN_DIST_FROM_BOX.
 # ---------------------------------------------------------------------------
 
-NEAR_BOX_WORKSPACE_X_MIN: float = 0.35
-NEAR_BOX_WORKSPACE_X_MAX: float = 0.65
-NEAR_BOX_WORKSPACE_Y_MIN: float = -0.55
-NEAR_BOX_WORKSPACE_Y_MAX: float = -0.25
 # The termination condition uses x_range=(-0.12, 0.12), y_range=(-0.12, 0.12),
 # meaning the box interior is ±0.12 m from centre. Adding wall thickness (~0.02 m)
 # and a block half-size buffer (~0.03 m) gives a safe minimum of ~0.17 m.
 # Use 0.20 m to match the normal-mode clearance and avoid physics instability.
 NEAR_BOX_MIN_DIST: float = 0.20   # same as normal mode — avoids spawning inside box
-NEAR_BOX_MAX_DIST: float = 0.40   # keep all blocks within 40 cm of box centre
+NEAR_BOX_MAX_DIST: float = 0.45   # keep all blocks within 45 cm of box centre
+# Workspace clip: only keep points that could plausibly satisfy robot-reach.
+# Y=-0.55 (box level) is mostly invalid for MIN_REACH — so clip Y_MIN to -0.50.
+NEAR_BOX_WORKSPACE_X_MIN: float = 0.20
+NEAR_BOX_WORKSPACE_X_MAX: float = 0.65
+NEAR_BOX_WORKSPACE_Y_MIN: float = -0.50
+NEAR_BOX_WORKSPACE_Y_MAX: float = -0.20
 
 
 # ---------------------------------------------------------------------------
@@ -124,36 +126,50 @@ def _sample_position(
     """Rejection-sample one valid world (x, y) for a block.
 
     Args:
-        near_box: If True, sample from the region near the storage box
+        near_box: If True, sample from the annulus around the storage box
                   (TA hint: evaluation blocks are mostly placed near the box).
+                  Uses polar sampling for much higher acceptance rate than
+                  rectangle sampling.
     """
     if near_box:
-        x_min, x_max = NEAR_BOX_WORKSPACE_X_MIN, NEAR_BOX_WORKSPACE_X_MAX
-        y_min, y_max = NEAR_BOX_WORKSPACE_Y_MIN, NEAR_BOX_WORKSPACE_Y_MAX
-        min_box_dist = NEAR_BOX_MIN_DIST
-        max_box_dist = NEAR_BOX_MAX_DIST
+        for _ in range(MAX_ATTEMPTS):
+            # Uniform-area polar sampling inside annulus [min_dist, max_dist]
+            # around the box — guarantees box distance without rejection overhead.
+            r = math.sqrt(rng.uniform(NEAR_BOX_MIN_DIST ** 2, NEAR_BOX_MAX_DIST ** 2))
+            theta = rng.uniform(0, 2 * math.pi)
+            x = BOX_X + r * math.cos(theta)
+            y = BOX_Y + r * math.sin(theta)
+
+            # Clip to reachable workspace
+            if not (NEAR_BOX_WORKSPACE_X_MIN <= x <= NEAR_BOX_WORKSPACE_X_MAX):
+                continue
+            if not (NEAR_BOX_WORKSPACE_Y_MIN <= y <= NEAR_BOX_WORKSPACE_Y_MAX):
+                continue
+
+            reach = _dist2d(x, y, ROBOT_X, ROBOT_Y)
+            if reach < MIN_REACH or reach > MAX_REACH:
+                continue
+
+            if any(_dist2d(x, y, px, py) < MIN_BLOCK_SPACING for px, py in placed):
+                continue
+
+            return x, y
     else:
-        x_min, x_max = WORKSPACE_X_MIN, WORKSPACE_X_MAX
-        y_min, y_max = WORKSPACE_Y_MIN, WORKSPACE_Y_MAX
-        min_box_dist = MIN_DIST_FROM_BOX
-        max_box_dist = float("inf")
+        for _ in range(MAX_ATTEMPTS):
+            x = rng.uniform(WORKSPACE_X_MIN, WORKSPACE_X_MAX)
+            y = rng.uniform(WORKSPACE_Y_MIN, WORKSPACE_Y_MAX)
 
-    for _ in range(MAX_ATTEMPTS):
-        x = rng.uniform(x_min, x_max)
-        y = rng.uniform(y_min, y_max)
+            reach = _dist2d(x, y, ROBOT_X, ROBOT_Y)
+            if reach < MIN_REACH or reach > MAX_REACH:
+                continue
 
-        reach = _dist2d(x, y, ROBOT_X, ROBOT_Y)
-        if reach < MIN_REACH or reach > MAX_REACH:
-            continue
+            if _dist2d(x, y, BOX_X, BOX_Y) < MIN_DIST_FROM_BOX:
+                continue
 
-        box_dist = _dist2d(x, y, BOX_X, BOX_Y)
-        if box_dist < min_box_dist or box_dist > max_box_dist:
-            continue
+            if any(_dist2d(x, y, px, py) < MIN_BLOCK_SPACING for px, py in placed):
+                continue
 
-        if any(_dist2d(x, y, px, py) < MIN_BLOCK_SPACING for px, py in placed):
-            continue
-
-        return x, y
+            return x, y
 
     raise RuntimeError(
         f"Could not place a block after {MAX_ATTEMPTS} attempts — "
