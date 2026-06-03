@@ -252,9 +252,9 @@ class ColorSortBlocksStateMachine(StateMachineBase):
             basket_name = _OBJECT_TO_BASKET[obj_name]
             basket_pos = env.scene[basket_name].data.root_pos_w - env.scene.env_origins
             obj_pos = env.scene[obj_name].data.root_pos_w - env.scene.env_origins
-            dx = (obj_pos[:, 0] - basket_pos[:, 0]).item()
-            dy = (obj_pos[:, 1] - basket_pos[:, 1]).item()
-            dz = (obj_pos[:, 2] - basket_pos[:, 2]).item()
+            dx = (obj_pos[0, 0] - basket_pos[0, 0]).item()
+            dy = (obj_pos[0, 1] - basket_pos[0, 1]).item()
+            dz = (obj_pos[0, 2] - basket_pos[0, 2]).item()
             ok_x = _SUCCESS_X_RANGE[0] < dx < _SUCCESS_X_RANGE[1]
             ok_y = _SUCCESS_Y_RANGE[0] < dy < _SUCCESS_Y_RANGE[1]
             ok_z = _SUCCESS_Z_RANGE[0] < dz < _SUCCESS_Z_RANGE[1]
@@ -271,7 +271,7 @@ class ColorSortBlocksStateMachine(StateMachineBase):
             done = torch.logical_and(done, obj_pos[:, 1] > basket_pos[:, 1] + _SUCCESS_Y_RANGE[0])
             done = torch.logical_and(done, obj_pos[:, 2] < basket_pos[:, 2] + _SUCCESS_Z_RANGE[1])
             done = torch.logical_and(done, obj_pos[:, 2] > basket_pos[:, 2] + _SUCCESS_Z_RANGE[0])
-        return bool(done.all().item())
+        return bool(done[0].item())
 
     def pre_step(self, env) -> None:
         pass
