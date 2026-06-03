@@ -181,7 +181,7 @@ Available tasks:
 - `HCIS-CupStacking-SingleArm-v0`
 - `HCIS-CutleryArrangement-SingleArm-v0`
 
-> 💡 **Recommended: `--num_envs 4`** for ~4× faster data generation. The front camera was fixed to use `{ENV_REGEX_NS}/front_camera` (per-environment). If you see CUDA device-side assert errors on reset, fall back to `--num_envs 1`.
+> ⚠️ **Always use `--num_envs 1`** for these tasks. The front camera (`/World/front_camera`) is a single global tile — using `--num_envs > 1` causes a CUDA device-side assert during environment reset.
 
 **First run:**
 

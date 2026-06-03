@@ -331,9 +331,9 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
         done = torch.ones(env.num_envs, dtype=torch.bool, device=env.device)
         for obj_name in _OBJECT_NAMES:
             obj_pos = env.scene[obj_name].data.root_pos_w - env.scene.env_origins
-            dx = (obj_pos[0, 0] - storage_pos[0, 0]).item()
-            dy = (obj_pos[0, 1] - storage_pos[0, 1]).item()
-            dz = (obj_pos[0, 2] - storage_pos[0, 2]).item()
+            dx = (obj_pos[:, 0] - storage_pos[:, 0]).item()
+            dy = (obj_pos[:, 1] - storage_pos[:, 1]).item()
+            dz = (obj_pos[:, 2] - storage_pos[:, 2]).item()
             ok_x = _SUCCESS_X_RANGE[0] < dx < _SUCCESS_X_RANGE[1]
             ok_y = _SUCCESS_Y_RANGE[0] < dy < _SUCCESS_Y_RANGE[1]
             ok_z = _SUCCESS_Z_RANGE[0] < dz < _SUCCESS_Z_RANGE[1]
@@ -351,7 +351,7 @@ class ToyBlocksCollectionStateMachine(StateMachineBase):
             done = torch.logical_and(done, obj_pos[:, 1] > storage_pos[:, 1] + _SUCCESS_Y_RANGE[0])
             done = torch.logical_and(done, obj_pos[:, 2] < storage_pos[:, 2] + _SUCCESS_Z_RANGE[1])
             done = torch.logical_and(done, obj_pos[:, 2] > storage_pos[:, 2] + _SUCCESS_Z_RANGE[0])
-        return bool(done[0].item())
+        return bool(done.all().item())
 
     def pre_step(self, env) -> None:
         pass
