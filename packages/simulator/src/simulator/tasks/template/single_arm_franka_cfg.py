@@ -85,7 +85,7 @@ class SingleArmFrankaTaskSceneCfg(InteractiveSceneCfg):
     )
 
     front: TiledCameraCfg = TiledCameraCfg(
-        prim_path="/World/front_camera",
+        prim_path="{ENV_REGEX_NS}/front_camera",
         offset=TiledCameraCfg.OffsetCfg(
             pos=(0.35, 1.1, 0.6), rot=(0.0, -0.0, -0.60182, -0.79864), convention="opengl"
         ),
