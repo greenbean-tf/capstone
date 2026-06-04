@@ -119,6 +119,12 @@ parser.add_argument(
     action="store_true",
     help="Print observation and action tensor shapes around each local LeRobot inference call.",
 )
+parser.add_argument(
+    "--object_poses",
+    type=str,
+    default=None,
+    help="Path to object_poses.json. If provided, block positions are randomised per episode.",
+)
 
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
@@ -159,6 +165,7 @@ import leisaac  # noqa: F401
 import simulator.tasks  # noqa: F401
 from simulator.tasks.external import resolve_task
 from simulator import FRANKA_JOINT_NAMES
+from simulator.utils.object_poses_loader import load_episode_poses
 
 
 def setup_dual_viewports():
@@ -436,6 +443,55 @@ class LeRobotSyncPolicy:
         return torch.from_numpy(actions[:, None, :])
 
 
+def _check_per_color_success(env) -> dict[str, bool]:
+    """Check which colour blocks are in their correct baskets independently.
+
+    Uses the same ±12 cm x/y, ±8 cm z tolerances as ColorSortBlocksTerminationsCfg.
+    Returns {colour: bool}. Returns empty dict if scene objects are not found.
+    """
+    PAIRS = [
+        ("green_block", "green_basket", "green"),
+        ("blue_block",  "blue_basket",  "blue"),
+        ("red_block",   "red_basket",   "red"),
+    ]
+    X_RANGE = (-0.12, 0.12)
+    Y_RANGE = (-0.12, 0.12)
+    Z_RANGE = (-0.08, 0.08)
+    result = {}
+    for block_name, basket_name, color in PAIRS:
+        try:
+            block = env.scene[block_name]
+            basket = env.scene[basket_name]
+        except Exception:
+            continue
+        block_pos = (block.data.root_pos_w - env.scene.env_origins)[0]
+        basket_pos = (basket.data.root_pos_w - env.scene.env_origins)[0]
+        in_basket = (
+            X_RANGE[0] < (block_pos[0] - basket_pos[0]).item() < X_RANGE[1]
+            and Y_RANGE[0] < (block_pos[1] - basket_pos[1]).item() < Y_RANGE[1]
+            and Z_RANGE[0] < (block_pos[2] - basket_pos[2]).item() < Z_RANGE[1]
+        )
+        result[color] = in_basket
+    return result
+
+
+def _apply_episode_poses(env, poses: dict) -> None:
+    """Write per-object root poses into the sim (mirrors generate.py logic)."""
+    import math as _math
+    device = env.device
+    for name, (pos, quat) in poses.items():
+        obj = env.scene[name]
+        pose_tensor = torch.tensor(
+            [[pos[0], pos[1], pos[2], quat[0], quat[1], quat[2], quat[3]]],
+            device=device,
+            dtype=torch.float32,
+        ).repeat(env.num_envs, 1)
+        obj.write_root_pose_to_sim(pose_tensor)
+        w, x, y, z = quat
+        yaw_deg = _math.degrees(_math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
+        print(f"  [pose] {name}: pos=({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) yaw={yaw_deg:+.1f}°")
+
+
 def preprocess_obs_dict(obs_dict: dict, language_instruction: str):
     obs_dict["task_description"] = language_instruction
     return obs_dict
@@ -489,9 +545,21 @@ def main():
     print("[rollout] warming up renderer (20 app updates)...", flush=True)
     for _ in range(20):
         simulation_app.update()
+    # Load object poses for randomised evaluation (optional).
+    episodes = None
+    episode_pose_idx = 0
+    if args_cli.object_poses:
+        episodes = load_episode_poses(args_cli.object_poses, env_cfg.object_pose_cfg)
+        if not episodes:
+            raise ValueError(f"No status=='full' episodes found in {args_cli.object_poses}")
+        print(f"[rollout] Loaded {len(episodes)} pose episodes from {args_cli.object_poses}", flush=True)
+
     print("[rollout] resetting environment...", flush=True)
     obs_dict, _ = env.reset()
     print("[rollout] env.reset() returned", flush=True)
+    if episodes:
+        _apply_episode_poses(env, episodes[episode_pose_idx % len(episodes)])
+        episode_pose_idx += 1
 
     language_instruction = args_cli.policy_language_instruction
     if language_instruction is None:
@@ -522,14 +590,21 @@ def main():
 
 
     success_count, episode_count = 0, 1
+    color_success_counts = {"green": 0, "blue": 0, "red": 0}
+    completion_times: list[float] = []
+
     while max_episode_count <= 0 or episode_count <= max_episode_count:
         print(f"[Evaluation] Evaluating episode {episode_count}...")
         success, time_out = False, False
+        episode_start_time = time.time()
         while simulation_app.is_running():
             with torch.inference_mode():
                 if controller.reset_state:
                     controller.reset()
                     obs_dict, _ = env.reset()
+                    if episodes:
+                        _apply_episode_poses(env, episodes[episode_pose_idx % len(episodes)])
+                        episode_pose_idx += 1
                     policy.reset()
                     episode_count += 1
                     break
@@ -554,25 +629,61 @@ def main():
                     if rate_limiter:
                         rate_limiter.sleep(env)
             if success:
-                print(f"[Evaluation] Episode {episode_count} is successful!")
+                elapsed = time.time() - episode_start_time
+                completion_times.append(elapsed)
+                per_color = _check_per_color_success(env)
+                for color, ok in per_color.items():
+                    if ok:
+                        color_success_counts[color] += 1
+                print(
+                    f"[Evaluation] Episode {episode_count} successful! "
+                    f"Time: {elapsed:.1f}s | "
+                    + " ".join(f"{c}={'✓' if per_color.get(c) else '✗'}" for c in ["green", "blue", "red"])
+                )
                 episode_count += 1
                 success_count += 1
+                obs_dict, _ = env.reset()
+                if episodes:
+                    _apply_episode_poses(env, episodes[episode_pose_idx % len(episodes)])
+                    episode_pose_idx += 1
                 policy.reset()
                 break
             if time_out:
-                print(f"[Evaluation] Episode {episode_count} timed out!")
+                per_color = _check_per_color_success(env)
+                for color, ok in per_color.items():
+                    if ok:
+                        color_success_counts[color] += 1
+                print(
+                    f"[Evaluation] Episode {episode_count} timed out! | "
+                    + " ".join(f"{c}={'✓' if per_color.get(c) else '✗'}" for c in ["green", "blue", "red"])
+                )
                 episode_count += 1
+                obs_dict, _ = env.reset()
+                if episodes:
+                    _apply_episode_poses(env, episodes[episode_pose_idx % len(episodes)])
+                    episode_pose_idx += 1
                 policy.reset()
                 break
+        ep_done = episode_count - 1
         print(
-            f"[Evaluation] now success rate: {success_count / (episode_count - 1)} "
-            f" [{success_count}/{episode_count - 1}]"
+            f"[Evaluation] Running: full={success_count}/{ep_done} "
+            f"| green={color_success_counts['green']}/{ep_done} "
+            f"| blue={color_success_counts['blue']}/{ep_done} "
+            f"| red={color_success_counts['red']}/{ep_done}"
         )
 
-    print(
-        f"[Evaluation] Final success rate: {success_count / max_episode_count:.3f} "
-        f" [{success_count}/{max_episode_count}]"
-    )
+    n = max_episode_count
+    avg_time = sum(completion_times) / len(completion_times) if completion_times else float("nan")
+    print("\n[Evaluation] ========== Final Results ==========")
+    print(f"  Full success rate  : {success_count}/{n} ({success_count/n:.1%})")
+    print(f"  Green block in box : {color_success_counts['green']}/{n} ({color_success_counts['green']/n:.1%})")
+    print(f"  Blue  block in box : {color_success_counts['blue']}/{n} ({color_success_counts['blue']/n:.1%})")
+    print(f"  Red   block in box : {color_success_counts['red']}/{n} ({color_success_counts['red']/n:.1%})")
+    if completion_times:
+        print(f"  Avg completion time: {avg_time:.1f}s (over {len(completion_times)} successful episodes)")
+    else:
+        print(f"  Avg completion time: N/A (no successful episodes)")
+    print("[Evaluation] ========================================\n")
 
     env.close()
     simulation_app.close()
