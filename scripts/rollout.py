@@ -466,7 +466,11 @@ def _check_per_color_success(env) -> dict[str, bool]:
     """Check which colour blocks are in their correct baskets independently.
 
     Uses the same ±12 cm x/y, ±8 cm z tolerances as ColorSortBlocksTerminationsCfg.
-    Returns {colour: bool}. Returns empty dict if scene objects are not found.
+    Returns {colour: bool}. Returns empty dict if scene objects are not found
+    (e.g. when running a non-ColorSortBlocks task).
+
+    NOTE: must be called BEFORE env.step() because IsaacLab auto-resets the
+    scene when the termination condition fires inside env.step().
     """
     PAIRS = [
         ("green_block", "green_basket", "green"),
@@ -481,16 +485,15 @@ def _check_per_color_success(env) -> dict[str, bool]:
         try:
             block = env.scene[block_name]
             basket = env.scene[basket_name]
+            block_pos = (block.data.root_pos_w - env.scene.env_origins)[0]
+            basket_pos = (basket.data.root_pos_w - env.scene.env_origins)[0]
+            result[color] = (
+                X_RANGE[0] < (block_pos[0] - basket_pos[0]).item() < X_RANGE[1]
+                and Y_RANGE[0] < (block_pos[1] - basket_pos[1]).item() < Y_RANGE[1]
+                and Z_RANGE[0] < (block_pos[2] - basket_pos[2]).item() < Z_RANGE[1]
+            )
         except Exception:
             continue
-        block_pos = (block.data.root_pos_w - env.scene.env_origins)[0]
-        basket_pos = (basket.data.root_pos_w - env.scene.env_origins)[0]
-        in_basket = (
-            X_RANGE[0] < (block_pos[0] - basket_pos[0]).item() < X_RANGE[1]
-            and Y_RANGE[0] < (block_pos[1] - basket_pos[1]).item() < Y_RANGE[1]
-            and Z_RANGE[0] < (block_pos[2] - basket_pos[2]).item() < Z_RANGE[1]
-        )
-        result[color] = in_basket
     return result
 
 
@@ -629,6 +632,7 @@ def main():
         episode_start_time = time.time()
         episode_frames: list[np.ndarray] = []
         frame_step = 0
+        last_per_color: dict[str, bool] = {}
         while simulation_app.is_running():
             with torch.inference_mode():
                 if controller.reset_state:
@@ -653,6 +657,7 @@ def main():
                     action = actions[action_index, :, :]
                     if env.cfg.dynamic_reset_gripper_effort_limit:
                         dynamic_reset_gripper_effort_limit_sim(env, teleop_device)
+                    last_per_color = _check_per_color_success(env)
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
                     if args_cli.record_video and camera_infos:
                         frame_step += 1
@@ -675,7 +680,7 @@ def main():
             if success:
                 elapsed = time.time() - episode_start_time
                 completion_times.append(elapsed)
-                per_color = _check_per_color_success(env)
+                per_color = last_per_color
                 for color, ok in per_color.items():
                     if ok:
                         color_success_counts[color] += 1
@@ -695,7 +700,7 @@ def main():
                 policy.reset()
                 break
             if time_out:
-                per_color = _check_per_color_success(env)
+                per_color = last_per_color
                 for color, ok in per_color.items():
                     if ok:
                         color_success_counts[color] += 1
