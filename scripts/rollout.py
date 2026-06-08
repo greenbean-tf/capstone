@@ -126,6 +126,24 @@ parser.add_argument(
     help="Path to object_poses.json. If provided, block positions are randomised per episode.",
 )
 
+parser.add_argument(
+    "--record_video",
+    action="store_true",
+    help="Save a video of each rollout episode.",
+)
+parser.add_argument(
+    "--video_dir",
+    type=str,
+    default="rollout_videos",
+    help="Directory to save episode videos (used with --record_video).",
+)
+parser.add_argument(
+    "--video_fps",
+    type=int,
+    default=10,
+    help="Playback FPS of saved videos.",
+)
+
 AppLauncher.add_app_launcher_args(parser)
 args_cli = parser.parse_args()
 
@@ -141,6 +159,7 @@ import omni.kit.viewport.utility as vp_util
 
 import carb
 import gymnasium as gym
+import imageio
 import numpy as np
 import omni
 import torch
@@ -492,6 +511,15 @@ def _apply_episode_poses(env, poses: dict) -> None:
         print(f"  [pose] {name}: pos=({pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}) yaw={yaw_deg:+.1f}°")
 
 
+def _write_episode_video(frames: list, path: _Path, fps: int) -> None:
+    """Write collected uint8 (H, W, C) frames to an mp4 file."""
+    if not frames:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    imageio.mimwrite(str(path), frames, fps=fps)
+    print(f"[rollout] Video saved → {path}", flush=True)
+
+
 def preprocess_obs_dict(obs_dict: dict, language_instruction: str):
     obs_dict["task_description"] = language_instruction
     return obs_dict
@@ -592,15 +620,21 @@ def main():
     success_count, episode_count = 0, 1
     color_success_counts = {"green": 0, "blue": 0, "red": 0}
     completion_times: list[float] = []
+    video_dir = _Path(args_cli.video_dir) if args_cli.record_video else None
+    capture_every = max(1, args_cli.step_hz // args_cli.video_fps)
 
     while max_episode_count <= 0 or episode_count <= max_episode_count:
         print(f"[Evaluation] Evaluating episode {episode_count}...")
         success, time_out = False, False
         episode_start_time = time.time()
+        episode_frames: list[np.ndarray] = []
+        frame_step = 0
         while simulation_app.is_running():
             with torch.inference_mode():
                 if controller.reset_state:
                     controller.reset()
+                    if video_dir is not None:
+                        _write_episode_video(episode_frames, video_dir / f"ep{episode_count:03d}_manual.mp4", args_cli.video_fps)
                     obs_dict, _ = env.reset()
                     if episodes:
                         _apply_episode_poses(env, episodes[episode_pose_idx % len(episodes)])
@@ -620,6 +654,16 @@ def main():
                     if env.cfg.dynamic_reset_gripper_effort_limit:
                         dynamic_reset_gripper_effort_limit_sim(env, teleop_device)
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
+                    if args_cli.record_video and camera_infos:
+                        frame_step += 1
+                        if frame_step % capture_every == 0:
+                            cam_frames = []
+                            for cam_key in sorted(camera_infos.keys()):
+                                img = obs_dict["policy"].get(cam_key)
+                                if img is not None:
+                                    cam_frames.append(img.cpu().numpy().astype(np.uint8)[0])
+                            if cam_frames:
+                                episode_frames.append(np.concatenate(cam_frames, axis=1))
                     if reset_terminated[0]:
                         success = True
                         break
@@ -640,6 +684,8 @@ def main():
                     f"Time: {elapsed:.1f}s | "
                     + " ".join(f"{c}={'✓' if per_color.get(c) else '✗'}" for c in ["green", "blue", "red"])
                 )
+                if video_dir is not None:
+                    _write_episode_video(episode_frames, video_dir / f"ep{episode_count:03d}_success.mp4", args_cli.video_fps)
                 episode_count += 1
                 success_count += 1
                 obs_dict, _ = env.reset()
@@ -657,6 +703,8 @@ def main():
                     f"[Evaluation] Episode {episode_count} timed out! | "
                     + " ".join(f"{c}={'✓' if per_color.get(c) else '✗'}" for c in ["green", "blue", "red"])
                 )
+                if video_dir is not None:
+                    _write_episode_video(episode_frames, video_dir / f"ep{episode_count:03d}_timeout.mp4", args_cli.video_fps)
                 episode_count += 1
                 obs_dict, _ = env.reset()
                 if episodes:
