@@ -1,5 +1,5 @@
 """
-Patch lerobot 0.4.4 to fix three bugs that prevent pi0_fast training:
+Patch lerobot 0.4.4 to fix four bugs that prevent pi0_fast training:
 
   1. pi0_fast: imports `transformers.models.siglip.check` which does not
      exist in any public PyPI release of transformers.
@@ -12,6 +12,11 @@ Patch lerobot 0.4.4 to fix three bugs that prevent pi0_fast training:
      `relative_actions_processor` which was added in a newer lerobot version.
      Fix: when pretrained_path is set and policy is PI0FastConfig, use the
      local make_pi0_fast_pre_post_processors instead of loading from hub.
+
+  4. dtype mismatch in SigLIP LayerNorm: transformers 4.57.x has a bug where
+     vision tower LayerNorm weights remain float32 after model.to(bfloat16)
+     when the config has torch_dtype="float32". Fix: explicitly cast every
+     non-float32 param to bfloat16 in to_bfloat16_for_selected_params.
 
 Usage:
     conda activate capstone
@@ -198,11 +203,64 @@ def _invalidate_pyc(src: pathlib.Path) -> None:
         pyc.unlink()
 
 
+# ---------------------------------------------------------------------------
+# Patch 4 – SigLIP LayerNorm bfloat16 dtype mismatch
+#
+# transformers 4.57.x has a bug where vision tower LayerNorm weights remain
+# float32 after model.to(bfloat16) when the config sets torch_dtype="float32".
+# Explicitly cast every non-float32 param to bfloat16 inside
+# to_bfloat16_for_selected_params so we don't depend on .to() working.
+# ---------------------------------------------------------------------------
+
+DTYPE_OLD = """\
+        for name, param in self.named_parameters():
+            if any(selector in name for selector in params_to_keep_float32):
+                param.data = param.data.to(dtype=torch.float32)\
+"""
+
+DTYPE_NEW = """\
+        for name, param in self.named_parameters():
+            if any(selector in name for selector in params_to_keep_float32):
+                param.data = param.data.to(dtype=torch.float32)
+            else:
+                # Explicitly cast to bfloat16 — workaround for transformers 4.57.x
+                # where vision tower LayerNorm weights may remain float32 after
+                # model.to(bfloat16) due to config torch_dtype="float32".
+                # Patched by scripts/patch_pi0fast.py
+                param.data = param.data.to(dtype=torch.bfloat16)\
+"""
+
+
+def patch_dtype() -> bool:
+    try:
+        import lerobot.policies.pi0_fast.modeling_pi0_fast as _mod
+    except Exception as exc:
+        print(f"[patch:dtype] Cannot import modeling_pi0_fast: {exc}")
+        return False
+
+    path = pathlib.Path(_mod.__file__)
+    text = path.read_text(encoding="utf-8")
+
+    if DTYPE_OLD not in text:
+        if "Patched by scripts/patch_pi0fast.py" in text and "dtype=torch.bfloat16" in text:
+            print(f"[patch:dtype] Already patched: {path}")
+            return True
+        print(f"[patch:dtype] Target block not found — modeling_pi0_fast.py may differ.")
+        print(f"              in: {path}")
+        return False
+
+    path.write_text(text.replace(DTYPE_OLD, DTYPE_NEW, 1), encoding="utf-8")
+    _invalidate_pyc(path)
+    print(f"[patch:dtype] Done: {path}")
+    return True
+
+
 def main() -> None:
     ok1 = patch_groot()    # must come first — fixes the crash that blocks all imports
     ok2 = patch_pi0fast()
     ok3 = patch_factory()
-    if not (ok1 and ok2 and ok3):
+    ok4 = patch_dtype()
+    if not (ok1 and ok2 and ok3 and ok4):
         sys.exit(1)
     print("[patch] All done. You can now run lerobot-train.")
 
