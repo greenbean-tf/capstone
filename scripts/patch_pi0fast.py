@@ -74,9 +74,15 @@ def patch_pi0fast() -> bool:
 # Patch 2 – groot dataclass bug in policies/__init__.py
 # ---------------------------------------------------------------------------
 
-GROOT_OLD = "from .groot.configuration_groot import GrootConfig as GrootConfig"
+# Include the preceding import line as context so the match is unique and won't
+# hit the already-patched indented copy inside the try block.
+GROOT_OLD = """\
+from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
+from .groot.configuration_groot import GrootConfig as GrootConfig\
+"""
 
 GROOT_NEW = """\
+from .diffusion.configuration_diffusion import DiffusionConfig as DiffusionConfig
 try:
     from .groot.configuration_groot import GrootConfig as GrootConfig
 except Exception:
