@@ -212,22 +212,25 @@ def _invalidate_pyc(src: pathlib.Path) -> None:
 # to_bfloat16_for_selected_params so we don't depend on .to() working.
 # ---------------------------------------------------------------------------
 
+# The root cause is that load_state_dict (called AFTER __init__) loads
+# checkpoint weights that may be in float32, overriding the bfloat16 dtype
+# set by to_bfloat16_for_selected_params during __init__.
+# Fix: re-apply the dtype conversion immediately after load_state_dict.
+
 DTYPE_OLD = """\
-        for name, param in self.named_parameters():
-            if any(selector in name for selector in params_to_keep_float32):
-                param.data = param.data.to(dtype=torch.float32)\
+            # Load the remapped state dict into the model
+            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)\
 """
 
 DTYPE_NEW = """\
-        for name, param in self.named_parameters():
-            if any(selector in name for selector in params_to_keep_float32):
-                param.data = param.data.to(dtype=torch.float32)
-            else:
-                # Explicitly cast to bfloat16 — workaround for transformers 4.57.x
-                # where vision tower LayerNorm weights may remain float32 after
-                # model.to(bfloat16) due to config torch_dtype="float32".
-                # Patched by scripts/patch_pi0fast.py
-                param.data = param.data.to(dtype=torch.bfloat16)\
+            # Load the remapped state dict into the model
+            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
+
+            # Re-apply dtype conversion: checkpoint weights may be in float32,
+            # overriding the bfloat16 dtype set during __init__.
+            # Patched by scripts/patch_pi0fast.py
+            if hasattr(model.model, "paligemma_with_expert") and getattr(config, "dtype", None) == "bfloat16":
+                model.model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")\
 """
 
 
@@ -242,7 +245,7 @@ def patch_dtype() -> bool:
     text = path.read_text(encoding="utf-8")
 
     if DTYPE_OLD not in text:
-        if "Patched by scripts/patch_pi0fast.py" in text and "dtype=torch.bfloat16" in text:
+        if "Re-apply dtype conversion" in text:
             print(f"[patch:dtype] Already patched: {path}")
             return True
         print(f"[patch:dtype] Target block not found — modeling_pi0_fast.py may differ.")
