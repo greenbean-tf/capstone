@@ -264,12 +264,129 @@ def patch_dtype() -> bool:
     return True
 
 
+# ---------------------------------------------------------------------------
+# Patch 5 – SigLIP EncoderLayer LayerNorm dtype mismatch (targeted fix)
+#
+# Patch 4 casts hidden_states in SigLIPVisionTransformer.forward before
+# calling self.encoder(), but transformers 4.57.x wraps each encoder layer
+# in its own gradient checkpointing (modeling_layers.py:93), and the cast
+# does not survive into the individual layer re-runs.
+#
+# Fix: patch right at the failing call site — SigLIPEncoderLayer.forward —
+# so the cast happens immediately before self.layer_norm1(hidden_states).
+# ---------------------------------------------------------------------------
+
+LAYER_OLD = """\
+        hidden_states = self.layer_norm1(hidden_states)\
+"""
+
+LAYER_NEW = """\
+        # Patched by scripts/patch_pi0fast.py: cast to match LayerNorm weight dtype.
+        # patch_embedding/position_embedding are float32 (params_to_keep_float32 in pi0_fast),
+        # but encoder layer_norm1 weights are bfloat16 — mismatch causes RuntimeError.
+        if hidden_states.dtype != self.layer_norm1.weight.dtype:
+            hidden_states = hidden_states.to(self.layer_norm1.weight.dtype)
+        hidden_states = self.layer_norm1(hidden_states)\
+"""
+
+
+def patch_encoder_layer() -> bool:
+    try:
+        from transformers.models.siglip import modeling_siglip as _mod
+    except Exception as exc:
+        print(f"[patch:encoder_layer] Cannot import modeling_siglip: {exc}")
+        return True  # non-fatal: patch_embed_image is the definitive fix
+
+    path = pathlib.Path(_mod.__file__)
+    text = path.read_text(encoding="utf-8")
+
+    if LAYER_OLD not in text:
+        if "cast to match LayerNorm weight dtype" in text:
+            print(f"[patch:encoder_layer] Already patched: {path}")
+        else:
+            # Indentation in this transformers version differs — non-fatal.
+            # patch_embed_image (patch 6) is the definitive fix.
+            print(f"[patch:encoder_layer] Pattern not found (OK — patch:embed_image covers this): {path}")
+        return True  # non-fatal
+
+    path.write_text(text.replace(LAYER_OLD, LAYER_NEW, 1), encoding="utf-8")
+    _invalidate_pyc(path)
+    print(f"[patch:encoder_layer] Done: {path}")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Patch 6 – embed_image forward hook (definitive fix for the dtype mismatch)
+#
+# Patches 4 and 5 target transformers internals but are brittle against
+# indentation/version differences.  This patch modifies lerobot's own
+# PaliGemmaWithExpert.embed_image to register a temporary forward hook on
+# SigLIPVisionEmbeddings that casts its float32 output to the encoder's
+# bfloat16 before the encoder layers see it.  It runs inside lerobot code
+# (not transformers), so it is independent of the transformers version.
+# ---------------------------------------------------------------------------
+
+EMBED_OLD = """\
+    def embed_image(self, image: torch.Tensor):
+        return self.paligemma.model.get_image_features(image)\
+"""
+
+EMBED_NEW = """\
+    def embed_image(self, image: torch.Tensor):
+        # Patched by scripts/patch_pi0fast.py: cast embedding output to encoder dtype.
+        # patch_embedding/position_embedding are float32 (params_to_keep_float32) but
+        # the encoder LayerNorm weights are bfloat16, causing RuntimeError in
+        # transformers 4.57.x.  Hook the embeddings module to cast before the encoder.
+        _emb = self.paligemma.model.vision_tower.vision_model.embeddings
+        _enc = self.paligemma.model.vision_tower.vision_model.encoder
+        _enc_first = next(_enc.parameters(), None)
+        if _enc_first is not None and _enc_first.dtype != torch.float32:
+            _tgt = _enc_first.dtype
+
+            def _cast_hook(mod, inp, out):
+                return out.to(_tgt)
+
+            _h = _emb.register_forward_hook(_cast_hook)
+            try:
+                return self.paligemma.model.get_image_features(image)
+            finally:
+                _h.remove()
+        return self.paligemma.model.get_image_features(image)\
+"""
+
+
+def patch_embed_image() -> bool:
+    try:
+        import lerobot.policies.pi0_fast.modeling_pi0_fast as _mod
+    except Exception as exc:
+        print(f"[patch:embed_image] Cannot import modeling_pi0_fast: {exc}")
+        return False
+
+    path = pathlib.Path(_mod.__file__)
+    text = path.read_text(encoding="utf-8")
+
+    if EMBED_OLD not in text:
+        if "cast embedding output to encoder dtype" in text:
+            print(f"[patch:embed_image] Already patched: {path}")
+            return True
+        print(f"[patch:embed_image] Target block not found — modeling_pi0_fast.py may differ.")
+        print(f"                     in: {path}")
+        return False
+
+    path.write_text(text.replace(EMBED_OLD, EMBED_NEW, 1), encoding="utf-8")
+    _invalidate_pyc(path)
+    print(f"[patch:embed_image] Done: {path}")
+    return True
+
+
 def main() -> None:
     ok1 = patch_groot()    # must come first — fixes the crash that blocks all imports
     ok2 = patch_pi0fast()
     ok3 = patch_factory()
     ok4 = patch_dtype()
-    if not (ok1 and ok2 and ok3 and ok4):
+    ok5 = patch_encoder_layer()
+    ok6 = patch_embed_image()
+    if not (ok1 and ok2 and ok3 and ok4 and ok5 and ok6):
         sys.exit(1)
     print("[patch] All done. You can now run lerobot-train.")
 
