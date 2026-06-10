@@ -1,5 +1,5 @@
 """
-Patch lerobot 0.4.4 to fix two import-time bugs that prevent training:
+Patch lerobot 0.4.4 to fix three bugs that prevent pi0_fast training:
 
   1. pi0_fast: imports `transformers.models.siglip.check` which does not
      exist in any public PyPI release of transformers.
@@ -7,6 +7,11 @@ Patch lerobot 0.4.4 to fix two import-time bugs that prevent training:
   2. groot: GR00TN15Config has a dataclass field-ordering bug on some
      Python 3.11 installs (non-default arg follows default arg), crashing
      the lerobot policies __init__.py before any training can start.
+
+  3. factory: lerobot/pi0fast-base's saved processor config references
+     `relative_actions_processor` which was added in a newer lerobot version.
+     Fix: when pretrained_path is set and policy is PI0FastConfig, use the
+     local make_pi0_fast_pre_post_processors instead of loading from hub.
 
 Usage:
     conda activate capstone
@@ -111,6 +116,72 @@ def patch_groot() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Patch 3 – factory.py: bypass pretrained processor config for PI0Fast
+#
+# lerobot/pi0fast-base on HuggingFace was uploaded with a processor config
+# that references `relative_actions_processor`, a step added in a newer
+# lerobot version.  When pretrained_path is set, factory.py currently loads
+# the hub's processor config verbatim and crashes.
+#
+# Fix: intercept the PI0FastConfig case BEFORE the generic from_pretrained
+# path, and call the local make_pi0_fast_pre_post_processors instead.
+# ---------------------------------------------------------------------------
+
+FACTORY_OLD = """\
+    if pretrained_path:
+        # TODO(Steven): Temporary patch, implement correctly the processors for Gr00t
+        if isinstance(policy_cfg, GrootConfig):\
+"""
+
+FACTORY_NEW = """\
+    if pretrained_path:
+        # Patched by scripts/patch_pi0fast.py:
+        # lerobot/pi0fast-base's saved processor config references
+        # `relative_actions_processor` which does not exist in lerobot 0.4.4.
+        # Use the local processor builder instead so we are not tied to the
+        # hub's config.  Use policy_cfg.type string to avoid importing
+        # PI0FastConfig (which is not imported in factory.py by default).
+        if getattr(policy_cfg, "type", None) == "pi0_fast":
+            from lerobot.policies.pi0_fast.processor_pi0_fast import (
+                make_pi0_fast_pre_post_processors,
+            )
+            return make_pi0_fast_pre_post_processors(
+                config=policy_cfg,
+                dataset_stats=kwargs.get("dataset_stats"),
+            )
+
+        # TODO(Steven): Temporary patch, implement correctly the processors for Gr00t
+        if isinstance(policy_cfg, GrootConfig):\
+"""
+
+
+def patch_factory() -> bool:
+    try:
+        import lerobot.policies.factory as _mod
+    except Exception as exc:
+        print(f"[patch:factory] Cannot import factory: {exc}")
+        return False
+
+    path = pathlib.Path(_mod.__file__)
+    text = path.read_text(encoding="utf-8")
+
+    if FACTORY_OLD not in text:
+        if "Patched by scripts/patch_pi0fast.py" in text:
+            print(f"[patch:factory] Already patched: {path}")
+            return True
+        print(f"[patch:factory] Target block not found — factory.py may differ from expected.")
+        print(f"                in: {path}")
+        return False
+
+    # Also need PI0FastConfig to be imported in factory.py for the isinstance check.
+    # It's already imported at the top of factory.py in lerobot 0.4.4.
+    path.write_text(text.replace(FACTORY_OLD, FACTORY_NEW, 1), encoding="utf-8")
+    _invalidate_pyc(path)
+    print(f"[patch:factory] Done: {path}")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -122,9 +193,10 @@ def _invalidate_pyc(src: pathlib.Path) -> None:
 
 
 def main() -> None:
-    ok1 = patch_groot()   # must come first — fixes the crash that blocks all imports
+    ok1 = patch_groot()    # must come first — fixes the crash that blocks all imports
     ok2 = patch_pi0fast()
-    if not (ok1 and ok2):
+    ok3 = patch_factory()
+    if not (ok1 and ok2 and ok3):
         sys.exit(1)
     print("[patch] All done. You can now run lerobot-train.")
 
