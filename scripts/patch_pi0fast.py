@@ -13,10 +13,12 @@ Patch lerobot 0.4.4 to fix four bugs that prevent pi0_fast training:
      Fix: when pretrained_path is set and policy is PI0FastConfig, use the
      local make_pi0_fast_pre_post_processors instead of loading from hub.
 
-  4. dtype mismatch in SigLIP LayerNorm: transformers 4.57.x has a bug where
-     vision tower LayerNorm weights remain float32 after model.to(bfloat16)
-     when the config has torch_dtype="float32". Fix: explicitly cast every
-     non-float32 param to bfloat16 in to_bfloat16_for_selected_params.
+  4. dtype mismatch in SigLIP encoder: patch_embedding and position_embedding
+     are intentionally kept float32, so their output hidden_states are float32.
+     The SigLIP encoder's LayerNorm weights are bfloat16. In transformers 5.x
+     this is handled automatically; in 4.57.x it is not. Fix: patch
+     modeling_siglip.py to cast hidden_states to the encoder's dtype before
+     the encoder call ("expected Float but found BFloat16" error).
 
 Usage:
     conda activate capstone
@@ -212,43 +214,47 @@ def _invalidate_pyc(src: pathlib.Path) -> None:
 # to_bfloat16_for_selected_params so we don't depend on .to() working.
 # ---------------------------------------------------------------------------
 
-# The root cause is that load_state_dict (called AFTER __init__) loads
-# checkpoint weights that may be in float32, overriding the bfloat16 dtype
-# set by to_bfloat16_for_selected_params during __init__.
-# Fix: re-apply the dtype conversion immediately after load_state_dict.
+# Root cause: patch_embedding and position_embedding are kept in float32
+# (intentional, per params_to_keep_float32), so their output hidden_states
+# are float32. The SigLIP encoder's layer_norm1 weights are bfloat16.
+# In transformers 5.x this dtype mismatch is handled automatically;
+# in 4.57.x it is not, causing "expected Float but found BFloat16".
+# Fix: patch modeling_siglip.py to cast hidden_states to the encoder's
+# dtype just before the encoder call.
 
 DTYPE_OLD = """\
-            # Load the remapped state dict into the model
-            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)\
+        encoder_outputs: BaseModelOutput = self.encoder(\
 """
 
 DTYPE_NEW = """\
-            # Load the remapped state dict into the model
-            missing_keys, unexpected_keys = model.load_state_dict(remapped_state_dict, strict=strict)
-
-            # Re-apply dtype conversion: checkpoint weights may be in float32,
-            # overriding the bfloat16 dtype set during __init__.
-            # Patched by scripts/patch_pi0fast.py
-            if hasattr(model.model, "paligemma_with_expert") and getattr(config, "dtype", None) == "bfloat16":
-                model.model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")\
+        # Cast hidden_states to encoder dtype — workaround for transformers 4.57.x.
+        # Float32 patch/position embeddings produce float32 hidden_states, but the
+        # encoder LayerNorm weights are bfloat16 (as set by to_bfloat16_for_selected_params).
+        # Patched by scripts/patch_pi0fast.py
+        if (
+            hidden_states.dtype != self.encoder.layers[0].layer_norm1.weight.dtype
+            and len(self.encoder.layers) > 0
+        ):
+            hidden_states = hidden_states.to(self.encoder.layers[0].layer_norm1.weight.dtype)
+        encoder_outputs: BaseModelOutput = self.encoder(\
 """
 
 
 def patch_dtype() -> bool:
     try:
-        import lerobot.policies.pi0_fast.modeling_pi0_fast as _mod
+        from transformers.models.siglip import modeling_siglip as _mod
     except Exception as exc:
-        print(f"[patch:dtype] Cannot import modeling_pi0_fast: {exc}")
+        print(f"[patch:dtype] Cannot import modeling_siglip: {exc}")
         return False
 
     path = pathlib.Path(_mod.__file__)
     text = path.read_text(encoding="utf-8")
 
     if DTYPE_OLD not in text:
-        if "Re-apply dtype conversion" in text:
+        if "Patched by scripts/patch_pi0fast.py" in text and "to encoder dtype" in text:
             print(f"[patch:dtype] Already patched: {path}")
             return True
-        print(f"[patch:dtype] Target block not found — modeling_pi0_fast.py may differ.")
+        print(f"[patch:dtype] Target line not found — modeling_siglip.py may differ.")
         print(f"              in: {path}")
         return False
 
